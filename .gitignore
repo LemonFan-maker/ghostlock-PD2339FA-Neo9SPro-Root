@@ -1,0 +1,6 @@
+# Build output (Makefile OUTDIR/EMBEDDIR; embedded blobs .incbin from here)
+build/
+
+# Object/dependency files
+*.o
+*.d
