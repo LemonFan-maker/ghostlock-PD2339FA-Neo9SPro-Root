@@ -16,10 +16,12 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <termios.h>
 #include <unistd.h>
 
 #define SOCK_PATH "/data/local/tmp/temp_su.sock"
+#define SOCK_ALT "/data/local/tmp/.mtp_hs.sock"
 
 static void set_root_env(void) {
   setenv("PATH",
@@ -63,7 +65,7 @@ static int read_full(int fd, void *buf, size_t len) {
   return 1;
 }
 
-static int connect_daemon(void) {
+static int connect_unix(const char *path) {
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     perror("su: socket");
@@ -73,18 +75,37 @@ static int connect_daemon(void) {
   struct sockaddr_un sun;
   memset(&sun, 0, sizeof(sun));
   sun.sun_family = AF_UNIX;
+  snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", path);
+
+  if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) {
+    int e = errno;
+    close(fd);
+    errno = e;
+    return -1;
+  }
+  return fd;
+}
+
+static int connect_daemon(void) {
   const char *sock = getenv("SU_SOCK_PATH");
   if (sock == NULL) {
     sock = SOCK_PATH;
   }
-  snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", sock);
-
-  if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) {
-    perror("su: connect daemon");
-    close(fd);
-    return -1;
+  int fd = connect_unix(sock);
+  if (fd >= 0) {
+    return fd;
   }
-  return fd;
+  if ((errno == EACCES || errno == ENOENT) && strcmp(sock, SOCK_ALT) != 0) {
+    int e = errno;
+    fprintf(stderr, "su: v141 fallback from %s (errno=%d) to %s\n", sock, e,
+            SOCK_ALT);
+    fd = connect_unix(SOCK_ALT);
+    if (fd >= 0) {
+      return fd;
+    }
+  }
+  perror("su: connect daemon");
+  return -1;
 }
 
 static int pump_pair(int a, int b) {
@@ -282,59 +303,125 @@ static void serve_one(int conn) {
   }
 }
 
+static int bind_listen_unix(const char *path, int verbose, int relabel) {
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    if (verbose) {
+      perror("socket");
+    }
+    return -1;
+  }
+  unlink(path);
+  struct sockaddr_un sun;
+  memset(&sun, 0, sizeof(sun));
+  sun.sun_family = AF_UNIX;
+  snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", path);
+
+  if (bind(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) {
+    int e = errno;
+    if (verbose) {
+      perror("bind");
+    }
+    close(fd);
+    errno = e;
+    return -1;
+  }
+  if (chown(path, 0, 0) != 0) {
+    fprintf(stderr, "su daemon chown %s -> 0:0 failed errno=%d "
+                    "(continuing)\n", path, errno);
+  }
+  chmod(path, 0666);
+  if (relabel) {
+    const char sctx[] = "u:object_r:shell_data_file:s0";
+    if (setxattr(path, "security.selinux", sctx, sizeof(sctx), 0) != 0) {
+      fprintf(stderr, "su daemon v141 relabel %s errno=%d "
+                      "(continuing unlabeled)\n", path, errno);
+    }
+  }
+  if (listen(fd, 16) != 0) {
+    int e = errno;
+    if (verbose) {
+      perror("listen");
+    }
+    close(fd);
+    errno = e;
+    return -1;
+  }
+  return fd;
+}
+
 static int daemon_main(void) {
   signal(SIGPIPE, SIG_IGN);
   set_root_env();
-
-  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-  if (fd < 0) {
-    perror("socket");
-    return 1;
-  }
 
   const char *sock = getenv("SU_SOCK_PATH");
   if (sock == NULL) {
     sock = SOCK_PATH;
   }
-  unlink(sock);
-  struct sockaddr_un sun;
-  memset(&sun, 0, sizeof(sun));
-  sun.sun_family = AF_UNIX;
-  snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", sock);
-
-  if (bind(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) {
-    perror("bind");
+  int fd = bind_listen_unix(sock, 1, 0);
+  if (fd < 0) {
     return 1;
   }
-  chmod(sock, 0666);
-  if (listen(fd, 16) != 0) {
-    perror("listen");
-    return 1;
+  int fd_alt = -1;
+  if (strcmp(sock, SOCK_ALT) != 0) {
+    fd_alt = bind_listen_unix(SOCK_ALT, 0, 1);
+    if (fd_alt < 0) {
+      fprintf(stderr, "su daemon v141 alt socket %s unavailable errno=%d "
+                      "(primary-only continuing)\n", SOCK_ALT, errno);
+    }
   }
 
   fprintf(stderr, "su daemon ready pid=%d socket=%s uid=%d euid=%d\n",
           getpid(), sock, getuid(), geteuid());
+  if (fd_alt >= 0) {
+    fprintf(stderr, "su daemon v141 alt socket=%s listening\n", SOCK_ALT);
+  }
 
   for (;;) {
-    int conn = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
-    if (conn < 0 && errno == EINTR) {
+    struct pollfd pfd[2];
+    int nfd = 1;
+    pfd[0].fd = fd;
+    pfd[0].events = POLLIN;
+    if (fd_alt >= 0) {
+      pfd[1].fd = fd_alt;
+      pfd[1].events = POLLIN;
+      nfd = 2;
+    }
+    int pr = poll(pfd, (nfds_t)nfd, -1);
+    if (pr < 0 && errno == EINTR) {
       continue;
     }
-    if (conn < 0) {
-      perror("accept");
+    if (pr < 0) {
+      perror("poll");
       sleep(1);
       continue;
     }
-
-    pid_t pid = fork();
-    if (pid == 0) {
-      close(fd);
-      serve_one(conn);
+    for (int li = 0; li < nfd; li++) {
+      if (!(pfd[li].revents & POLLIN)) {
+        continue;
+      }
+      int conn = accept4(pfd[li].fd, NULL, NULL, SOCK_CLOEXEC);
+      if (conn < 0 && errno == EINTR) {
+        continue;
+      }
+      if (conn < 0) {
+        perror("accept");
+        sleep(1);
+        continue;
+      }
+      pid_t pid = fork();
+      if (pid == 0) {
+        close(fd);
+        if (fd_alt >= 0) {
+          close(fd_alt);
+        }
+        serve_one(conn);
+        close(conn);
+        _exit(0);
+      }
       close(conn);
-      _exit(0);
-    }
-    close(conn);
-    while (waitpid(-1, NULL, WNOHANG) > 0) {
+      while (waitpid(-1, NULL, WNOHANG) > 0) {
+      }
     }
   }
 }

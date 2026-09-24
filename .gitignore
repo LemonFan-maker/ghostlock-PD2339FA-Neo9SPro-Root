@@ -4,3 +4,24 @@ build/
 # Object/dependency files
 *.o
 *.d
+
+tools/hijtest
+tools/slot_restore
+tools/psl2
+tools/r829_bandscan
+tools/psl2.rebuilt
+tools/arm_chain
+
+payloads/preload.so
+
+*_driver.log
+*_full.log
+*_command.txt
+!scripts/r776b_command.txt
+!scripts/r821a_command.txt
+*_band_post.txt
+*_ramoops*.txt
+*_bootreasons.txt
+ksu/kernelsu-*.ko
+!ksu/kernelsu-android14-6.1-local.ko
+ksu/kernelsu-device-ready.ko

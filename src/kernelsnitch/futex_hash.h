@@ -19,34 +19,31 @@ static inline __u32 rol32(__u32 word, unsigned int shift)
 
 #define fallthrough __attribute__((fallthrough));
 
+#define jhash_size(n) ((u32)1<<(n))
+#define jhash_mask(n) (jhash_size(n)-1)
 
-#define jhash_size(n)   ((u32)1<<(n))
-#define jhash_mask(n)   (jhash_size(n)-1)
-
-#define __jhash_mix(a, b, c)            \
-{                        \
-    a -= c;  a ^= rol32(c, 4);  c += b;    \
-    b -= a;  b ^= rol32(a, 6);  a += c;    \
-    c -= b;  c ^= rol32(b, 8);  b += a;    \
-    a -= c;  a ^= rol32(c, 16); c += b;    \
-    b -= a;  b ^= rol32(a, 19); a += c;    \
-    c -= b;  c ^= rol32(b, 4);  b += a;    \
+#define __jhash_mix(a, b, c) \
+{ \
+    a -= c; a ^= rol32(c, 4); c += b; \
+    b -= a; b ^= rol32(a, 6); a += c; \
+    c -= b; c ^= rol32(b, 8); b += a; \
+    a -= c; a ^= rol32(c, 16); c += b; \
+    b -= a; b ^= rol32(a, 19); a += c; \
+    c -= b; c ^= rol32(b, 4); b += a; \
 }
 
-#define __jhash_final(a, b, c)            \
-{                        \
-    c ^= b; c -= rol32(b, 14);        \
-    a ^= c; a -= rol32(c, 11);        \
-    b ^= a; b -= rol32(a, 25);        \
-    c ^= b; c -= rol32(b, 16);        \
-    a ^= c; a -= rol32(c, 4);        \
-    b ^= a; b -= rol32(a, 14);        \
-    c ^= b; c -= rol32(b, 24);        \
+#define __jhash_final(a, b, c) \
+{ \
+    c ^= b; c -= rol32(b, 14); \
+    a ^= c; a -= rol32(c, 11); \
+    b ^= a; b -= rol32(a, 25); \
+    c ^= b; c -= rol32(b, 16); \
+    a ^= c; a -= rol32(c, 4); \
+    b ^= a; b -= rol32(a, 14); \
+    c ^= b; c -= rol32(b, 24); \
 }
 
-#define JHASH_INITVAL        0xdeadbeef
-
-
+#define JHASH_INITVAL 0xdeadbeef
 
 static inline u32 jhash2(const u32 *k, u32 length, u32 initval)
 {
@@ -65,8 +62,8 @@ static inline u32 jhash2(const u32 *k, u32 length, u32 initval)
     }
 
     switch (length) {
-    case 3: c += k[2];    fallthrough;
-    case 2: b += k[1];    fallthrough;
+    case 3: c += k[2]; fallthrough;
+    case 2: b += k[1]; fallthrough;
     case 1: a += k[0];
         __jhash_final(a, b, c);
     case 0:
@@ -148,7 +145,7 @@ uint32_t __futex_hash(futex_key_t *key, uint32_t futex_hashsize)
 unsigned long futex_hashsize = (unsigned long)-1;
 void futex_init(void)
 {
-    futex_hashsize = SYSCHK(sysconf(_SC_NPROCESSORS_ONLN) * 256);
+    futex_hashsize = SYSCHK(gl_get_cpu_count() * 256);
 }
 uint32_t futex_hash(size_t addr, size_t mm)
 {

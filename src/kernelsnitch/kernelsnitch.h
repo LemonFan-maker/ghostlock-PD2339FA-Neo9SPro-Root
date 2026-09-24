@@ -30,7 +30,7 @@
 #define MULITPLE 4
 #if defined(__INTEL) || defined(__AMD)
 #define IDENTITY_START 0xffff888000000000ULL
-#define IDENTITY_END   0xffffc88000000000ULL
+#define IDENTITY_END 0xffffc88000000000ULL
 #define COARSE_SZ (1ULL << 30)
 #elif defined(__ARM)
 #define VA_BITS 39
@@ -42,10 +42,10 @@
 #define KERNELSNITCH_IDENTITY_END (KERNELSNITCH_IDENTITY_START + (64ULL<<30))
 #endif
 #define IDENTITY_START KERNELSNITCH_IDENTITY_START
-#define IDENTITY_END   KERNELSNITCH_IDENTITY_END
+#define IDENTITY_END KERNELSNITCH_IDENTITY_END
 #elif VA_BITS==48
 #define IDENTITY_START 0xffff000000000000ULL
-#define IDENTITY_END   0xffff800000000000ULL
+#define IDENTITY_END 0xffff800000000000ULL
 #else
 #error "Unsupported VA_BITS (expected 39 or 48)"
 #endif
@@ -202,7 +202,7 @@ static void *__mm_leak(void *arg)
                             break;
                         }
                     }
-                } 
+                }
             }
         }
     }
@@ -210,14 +210,13 @@ static void *__mm_leak(void *arg)
     return 0;
 }
 
-
 struct kernelsnitch_shared_state *kernelsnitch_setup(size_t __mm_struct_sz, size_t __mm_slab_order, size_t __thread_cnt, size_t __collision_cnt, size_t __verbose, size_t __mte_enabled)
 {
     struct kernelsnitch_shared_state *ks = SYSCHK(mmap(0, sizeof(struct kernelsnitch_shared_state), PROT_WRITE|PROT_READ, MAP_ANON|MAP_SHARED, -1, 0));
     ks->mm_struct = -1;
     ks->mm_struct_sz = __mm_struct_sz;
     ks->mm_slab_order = __mm_slab_order;
-    ks->cpu_cnt = sysconf(_SC_NPROCESSORS_ONLN)*2;
+    ks->cpu_cnt = gl_get_cpu_count()*2;
     ks->thread_cnt = __thread_cnt;
     ks->collisions = __collision_cnt;
     ks->verbose = __verbose;
