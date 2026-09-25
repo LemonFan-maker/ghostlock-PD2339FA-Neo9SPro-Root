@@ -1,0 +1,128 @@
+name: Build and package GhostLock
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghostlock-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: 30.0.16248370
+  PROJECT: PD2339-BP2A.250605.031.A3
+
+jobs:
+  build:
+    name: Build Android arm64 package
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld make python3 zip
+
+      - name: Install Android NDK r30
+        uses: android-actions/setup-android@v3
+
+      - name: Select Android NDK
+        shell: bash
+        run: |
+          sdkmanager --install "ndk;${NDK_VERSION}"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          NDK_DIR="$SDK_ROOT/ndk/${NDK_VERSION}"
+          test -x "$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android37-clang"
+          {
+            printf 'ANDROID_NDK_HOME=%s\n' "$NDK_DIR"
+            printf 'ANDROID_NDK_ROOT=%s\n' "$NDK_DIR"
+          } >> "$GITHUB_ENV"
+
+      - name: Build project
+        run: make PROJECT="$PROJECT"
+
+      - name: Build optional band probe
+        run: make -C tools r829_bandscan
+
+      - name: Verify build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s payloads/preload.so
+          for file in tools/hijtest tools/slot_restore tools/psl2 tools/r829_bandscan; do
+            test -x "$file"
+          done
+          bash -n scripts/*.sh ksu/*.sh
+          python3 -m py_compile ksu/make_device_ko.py
+          make info
+
+      - name: Create runnable archives
+        run: ./scripts/package_release.sh
+
+      - name: Verify runnable archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)
+          test -n "$archive"
+          contents=$(tar -tzf "$archive")
+          top=$(printf '%s\n' "$contents" | sed -n '1p' | cut -d/ -f1)
+          printf '%s\n' "$contents" | grep -Fx "$top/ksu/make_device_ko.py" >/dev/null
+          printf '%s\n' "$contents" | grep -Fx "$top/ksu/kernelsu-android14-6.1-local.ko" >/dev/null
+          printf '%s\n' "$contents" | grep -Fx "$top/tools/kallsyms.new" >/dev/null
+          printf '%s\n' "$contents" | grep -Fx "$top/scripts/r830_autofire.sh" >/dev/null
+          if printf '%s\n' "$contents" | grep -E '(^|/)README\.md$|(^|/)requirements\.txt$|(^|/)run\.sh$'; then
+            echo 'unexpected convenience or dependency file in runnable archive' >&2
+            exit 1
+          fi
+
+      - name: Upload runnable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostlock-package
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download built package
+        uses: actions/download-artifact@v4
+        with:
+          name: ghostlock-package
+          path: dist
+
+      - name: Publish tag release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip dist/*.sha256)
+          test "${#assets[@]}" -eq 3
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "GhostLock $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
