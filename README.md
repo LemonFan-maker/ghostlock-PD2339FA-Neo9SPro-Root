@@ -17,9 +17,7 @@
 >
 > **严禁在生产或日常主力设备上运行**；任何由此造成的设备变砖、数据丢失或硬件异常，作者概不负责。
 
----
-
-## 📖 项目简介
+## 项目简介
 
 **GhostLock** 是面向 **Android 16**（vivo iQOO Neo9S Pro）的 Linux 内核提权利用链（基于 `futex` 栈 UAF，CVE-2026-43499）：
 
@@ -27,9 +25,7 @@
 - **探测与烘焙**：通过 `psl2` 工具泄漏当次启动的 KASLR `TEXT` 基址，并动态烘焙设备专属 KernelSU 模块；
 - **B 轮**：再次发射重踩该空洞，获得内核任意读写原语后改写 `cred` 结构体提权至 `uid=0`，并将 SELinux 改为 Permissive，完成 Rootless 提权落地。
 
----
-
-## 🎯 目标设备与参数
+## 目标设备与参数
 
 | 配置项 | 详细规格 |
 | :--- | :--- |
@@ -38,40 +34,7 @@
 | **内核版本** | `6.1.145-android14-11`（AArch64，`VA_BITS=39`，4KB 页） |
 | **设备常量** | [`src/targets/target.h`](src/targets/target.h) |
 
-> [!NOTE]
-> 其他机型的 target 目录已精简清理，当前代码库为针对该机型的单目标实现草稿。
-
----
-
-## 🔄 利用链执行流程
-
-```mermaid
-flowchart TD
-    subgraph StageA ["第 1 阶段：A 轮（留置栈空洞）"]
-        A1["启动 app_process64 (注入 preload.so)"] --> A2["触发 FUTEX_LOCK_PI 等待路径"]
-        A2 --> A3["制造内核栈 UAF 留下可复用空洞并挂驻进程"]
-    end
-
-    subgraph StageMid ["第 2 阶段：KASLR 探测 & 模块动态烘焙"]
-        M1["运行 tools/psl2"] --> M2["实时探测当前启动内核 TEXT 基址"]
-        M2 --> M3["ksu/make_device_ko.sh 解析 kallsyms.new 烘焙模块"]
-        M3 --> M4["adb push 烘焙好的 device.ko 到 /data/local/tmp"]
-    end
-
-    subgraph StageB ["第 3 阶段：B 轮（重踩空洞 & 提权生效）"]
-        B1["再次以 B 轮环境变量加载 preload.so"] --> B2["重踩 A 轮保留的 futex 栈空洞"]
-        B2 --> B3["获取内核任意地址读写原语 (AAR/AAW)"]
-        B3 --> B4["劫持 fops 虚表并执行 commit_creds 写入 root 凭证"]
-        B4 --> B5["将 SELinux 置为 Permissive，动态挂载 KernelSU 驱动"]
-    end
-
-    StageA --> StageMid
-    StageMid --> StageB
-```
-
----
-
-## 🛠️ 构建指南
+## 构建指南
 
 ### 环境依赖
 
@@ -121,11 +84,9 @@ strings payloads/preload.so | grep -E '^[0-9a-f]{7,}(-dirty)?$'
 ```
 
 > [!IMPORTANT]
-> 仓库随附提供的 [`tools/kallsyms.new`](tools/kallsyms.new)（约 4.9MB，提取自官方固件 `boot.img`）是动态烘焙内核模块不可或缺的符号表输入。`tools/` 下的其余二进制不入库，均由 `make tools` 现场编译。
+> 仓库随附提供的 [`tools/kallsyms.new`](tools/kallsyms.new)（约 4.9MB，提取自官方固件 `boot.img`）是动态烘焙内核模块不可或缺的符号表输入。
 
----
-
-## 🚀 运行与提权
+## 运行与提权
 
 ### 前置准备
 
@@ -158,59 +119,29 @@ export ANDROID_SERIAL=<你的设备Serial>
 ### 方式二：分步手动发射
 
 ```sh
-# 1. A 轮：留置 futex PI 栈空洞并驻留等待进程
 adb shell "cd /data/local/tmp && env SLIDE_WRITE_TARGET=selinux \
   LD_PRELOAD=/data/local/tmp/preload.so /system/bin/app_process64 / dummy"
 
-# 2. 测算当前启动的 KASLR 内核基址
 TEXT=$(adb shell "/data/local/tmp/psl2")
 
-# 3. 烘焙并推送机型专用的 KernelSU 模块
 ./ksu/make_device_ko.sh "$TEXT"
 adb push ksu/kernelsu-device-ready.ko /data/local/tmp/
 
-# 4. B 轮：重踩栈空洞，劫持 fops 并改写 cred
 adb shell "cd /data/local/tmp && env SLIDE_WRITE_TARGET=fops \
   SLIDE_CRED_WRITE=1 SLIDE_TEXT_ADDR=$TEXT \
   LD_PRELOAD=/data/local/tmp/preload.so /system/bin/app_process64 / dummy"
 ```
 
----
+## Panic?
 
-## 🛡️ 系统安全性与稳定性（Panic？）
+目前取得root权限之后没有遇到任何因为root权限导致的应用程序崩溃、
+银行软件无法运行、手机无法解锁、相机无法使用等问题。
+因为这本身是一种rootless的方案，并没有写入/system分区或者是/vendor
+分区，本身操作安全。
 
-> [!NOTE]
-> **为什么不会引起系统崩溃（Kernel Panic）？**
->
-> 在实际测试中，取得 root 权限后未观察到任何应用闪退、无法解锁、指纹/面容异常或相机失效等问题。
->
-> 本方案采用纯内存运行时的 **Rootless / Systemless** 机制：
-> 1. **零分区修改**：全程不触碰、不重挂载、不写入 `/system`、`/vendor` 或 `/product` 分区；
-> 2. **无刷机风险**：无需解锁 Bootloader 或替换内核镜像，重启后即可恢复原生干净状态；
-> 3. **银行与风控应用兼容**：不触发基于静态分区的签名校验和系统完整性检测。
+如果出现了KernelPanic, 那大概是因为竞争或者是踩到了脏树导致的KernelPanic，
+一般忽略即可。本程序已经解决了多条root路线上的KernelPanic问题……
+剩下留存的解决方案还在研制中……
 
----
-
-## 📂 项目结构
-
-```text
-├── assets/             # 项目视觉设计资源与 Light-theme SVG Banner
-├── build/              # 编译中间目标与二进制缓冲
-├── ksu/                # KernelSU 预制固件及动态烘焙脚本 (make_device_ko.sh)
-├── payloads/           # 最终打包的注入载荷 (preload.so)
-├── scripts/            # 自动化发射脚本 (r830_autofire.sh) 与指令模板
-├── src/                # GhostLock 利用链核心源码
-│   ├── targets/        # 机型目标常量适配表 (target.h)
-│   ├── fops.c          # fops 虚表劫持实现
-│   ├── preload.c       # LD_PRELOAD 入口与状态分发
-│   ├── root.c          # cred 与 selinux 改写逻辑
-│   └── slide.c         # futex PI 栈滑动与 UAF 构造
-├── tools/              # KASLR 探测 (psl2) 与辅助探测工具集
-└── Makefile            # 工程跨平台与交叉编译规则
-```
-
----
-
-## 📄 License
-
-本项目基于 [MIT License](LICENSE) 开源。
+## License
+[MIT License](LICENSE)
