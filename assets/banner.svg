@@ -1,0 +1,305 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" fill="none">
+  <defs>
+    <style>
+      @font-face {
+        font-family: 'Maple Mono';
+        src: local('Maple Mono NF CN SemiBold'), local('Maple Mono NF CN'), local('Maple Mono SemiBold'), local('Maple Mono');
+        font-weight: 600;
+      }
+      .mono {
+        font-family: 'Maple Mono NF CN', 'Maple Mono', 'Maple Mono SC', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-weight: 600;
+        -webkit-font-smoothing: antialiased;
+      }
+      .blink {
+        animation: blinker 1.1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      }
+      @keyframes blinker {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+      }
+    </style>
+
+    <!-- Canvas Background Gradient -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="45%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#F1F5F9"/>
+    </linearGradient>
+
+    <!-- Ambient Glow Blurs (Light Mode) -->
+    <radialGradient id="glow-cyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-indigo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#818CF8" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#818CF8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-emerald" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34D399" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#34D399" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Card Background Gradient -->
+    <linearGradient id="terminal-card-bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+
+    <!-- Brand Gradients -->
+    <linearGradient id="brand-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+
+    <linearGradient id="ghost-cyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="50%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+
+    <!-- Shadow Filters -->
+    <filter id="card-shadow" x="-5%" y="-5%" width="112%" height="116%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.06"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0F172A" flood-opacity="0.04"/>
+    </filter>
+
+    <filter id="badge-shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.04"/>
+    </filter>
+
+    <!-- Technical Grid Pattern -->
+    <pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#94A3B8" fill-opacity="0.25"/>
+    </pattern>
+    <pattern id="line-grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#E2E8F0" stroke-width="0.8" stroke-dasharray="2 4"/>
+    </pattern>
+  </defs>
+
+  <!-- Base Card Frame -->
+  <rect width="1200" height="420" rx="18" fill="url(#bg-grad)" stroke="#CBD5E1" stroke-width="1.5"/>
+
+  <!-- Ambient Light Glows -->
+  <circle cx="1080" cy="80" r="260" fill="url(#glow-cyan)"/>
+  <circle cx="120" cy="360" r="220" fill="url(#glow-indigo)"/>
+  <circle cx="580" cy="200" r="180" fill="url(#glow-emerald)"/>
+
+  <!-- Background Grids -->
+  <rect width="1200" height="420" rx="18" fill="url(#dot-grid)"/>
+  <rect width="1200" height="420" rx="18" fill="url(#line-grid)"/>
+
+  <!-- Blueprint Edge Accents -->
+  <!-- Top Left Crosshair -->
+  <path d="M 20 28 L 36 28 M 28 20 L 28 36" stroke="#94A3B8" stroke-width="1.2"/>
+  <!-- Top Right Crosshair -->
+  <path d="M 1164 28 L 1180 28 M 1172 20 L 1172 36" stroke="#94A3B8" stroke-width="1.2"/>
+  <!-- Bottom Left Crosshair -->
+  <path d="M 20 392 L 36 392 M 28 384 L 28 400" stroke="#94A3B8" stroke-width="1.2"/>
+  <!-- Bottom Right Crosshair -->
+  <path d="M 1164 392 L 1180 392 M 1172 384 L 1172 400" stroke="#94A3B8" stroke-width="1.2"/>
+
+  <!-- Subtle Top Navigation / Spec Bar -->
+  <text x="50" y="32" class="mono" font-size="10" fill="#94A3B8" letter-spacing="1.5">SYS // AARCH64-KERNEL-SECURITY-RESEARCH</text>
+  <text x="1150" y="32" class="mono" font-size="10" fill="#94A3B8" text-anchor="end" letter-spacing="1">BP2A.250605.031.A3 / PD2339</text>
+
+  <!-- ================= LEFT HERO COLUMN ================= -->
+
+  <!-- Pill Badge: CVE Status -->
+  <g filter="url(#badge-shadow)">
+    <rect x="52" y="52" width="290" height="28" rx="14" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.2"/>
+    <circle cx="68" cy="66" r="4.5" fill="#10B981"/>
+    <circle cx="68" cy="66" r="8" fill="#10B981" fill-opacity="0.2"/>
+    <text x="82" y="70" class="mono" font-size="11" fill="#475569" letter-spacing="0.8">CVE-2026-43499 • FUTEX PI UAF</text>
+  </g>
+
+  <!-- Brand Emblem & Title -->
+  <g transform="translate(52, 98)">
+    <!-- Stylized Ghost & Lock Shield -->
+    <rect x="0" y="4" width="56" height="56" rx="14" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1.5"/>
+    <!-- Cyber Shield Geometry -->
+    <path d="M 28 14 L 43 20 V 32 C 43 40.5 36.5 47 28 50 C 19.5 47 13 40.5 13 32 V 20 Z" fill="none" stroke="url(#ghost-cyan)" stroke-width="2.2" stroke-linejoin="round"/>
+    <!-- Lock Shackle & Keyhole Inside Shield -->
+    <path d="M 23 26 C 23 23.2 25.2 21 28 21 C 30.8 21 33 23.2 33 26 V 29 H 23 Z" fill="none" stroke="#4F46E5" stroke-width="1.8" stroke-linecap="round"/>
+    <rect x="22" y="29" width="12" height="10" rx="2.5" fill="#4F46E5"/>
+    <circle cx="28" cy="33" r="1.5" fill="#FFFFFF"/>
+    <path d="M 28 34.5 V 36.5" stroke="#FFFFFF" stroke-width="1.2" stroke-linecap="round"/>
+
+    <!-- Main Title Typography -->
+    <text x="70" y="38" class="mono" font-size="38" fill="url(#brand-grad)" letter-spacing="2">GHOSTLOCK</text>
+    <text x="330" y="38" class="mono" font-size="24" fill="#4F46E5" letter-spacing="0.5">/PD2339</text>
+    <text x="72" y="58" class="mono" font-size="12" fill="#0284C7" letter-spacing="1.8">ARM64 KERNEL ARBITRARY READ/WRITE CHAIN</text>
+  </g>
+
+  <!-- Target & Description -->
+  <g transform="translate(52, 182)">
+    <text x="0" y="0" class="mono" font-size="16" fill="#1E293B">vivo iQOO Neo9S Pro • KernelSU Rootless LPE</text>
+    <text x="0" y="24" class="mono" font-size="12.5" fill="#64748B">Linux 6.1.145-android14-11  |  VA_BITS=39  |  PAGE_SIZE=4KB</text>
+  </g>
+
+  <!-- Feature Pill Tags Grid -->
+  <g transform="translate(52, 234)">
+    <!-- Tag 1: Two-Stage Chain -->
+    <g>
+      <rect x="0" y="0" width="154" height="28" rx="7" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+      <!-- Lightning Bolt Icon -->
+      <path d="M 16 7 L 11 15 L 15 15 L 14 21 L 20 13 L 16 13 Z" fill="#2563EB"/>
+      <text x="25" y="18" class="mono" font-size="11" fill="#1D4ED8">Two-Stage Chain</text>
+    </g>
+
+    <!-- Tag 2: Auto-Bake KSU -->
+    <g transform="translate(164, 0)">
+      <rect x="0" y="0" width="150" height="28" rx="7" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1"/>
+      <!-- Package Box Icon -->
+      <path d="M 13 11 L 18 8.5 L 23 11 L 18 13.5 Z M 13 12.5 L 18 15 V 20.5 L 13 18 Z M 23 12.5 L 18 15 V 20.5 L 23 18 Z" fill="none" stroke="#4338CA" stroke-width="1.2" stroke-linejoin="round"/>
+      <text x="28" y="18" class="mono" font-size="11" fill="#4338CA">Auto-Bake KSU</text>
+    </g>
+
+    <!-- Tag 3: PSL2 KASLR -->
+    <g transform="translate(324, 0)">
+      <rect x="0" y="0" width="156" height="28" rx="7" fill="#F5F3FF" stroke="#DDD6FE" stroke-width="1"/>
+      <!-- Crosshair Target Icon -->
+      <circle cx="17" cy="14" r="5" fill="none" stroke="#6D28D9" stroke-width="1.2"/>
+      <circle cx="17" cy="14" r="1.5" fill="#6D28D9"/>
+      <path d="M 17 6 V 9 M 17 19 V 22 M 9 14 H 12 M 22 14 H 25" stroke="#6D28D9" stroke-width="1.2"/>
+      <text x="30" y="18" class="mono" font-size="11" fill="#6D28D9">psl2 KASLR Leak</text>
+    </g>
+
+    <!-- Row 2 -->
+    <!-- Tag 4: Systemless Integrity -->
+    <g transform="translate(0, 38)">
+      <rect x="0" y="0" width="224" height="28" rx="7" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
+      <!-- Shield Check Icon -->
+      <path d="M 17 8 L 23 10.5 V 15 C 23 18.5 20.5 21 17 22 C 13.5 21 11 18.5 11 15 V 10.5 Z" fill="none" stroke="#047857" stroke-width="1.3"/>
+      <path d="M 14.5 15 L 16.5 17 L 19.5 13" fill="none" stroke="#047857" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="28" y="18" class="mono" font-size="11" fill="#047857">Zero Partition Modification</text>
+    </g>
+
+    <!-- Tag 5: Banking Apps / Biometrics Safe -->
+    <g transform="translate(234, 38)">
+      <rect x="0" y="0" width="246" height="28" rx="7" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
+      <!-- Bank / Pillar Icon -->
+      <path d="M 11 12 L 18 8 L 25 12 Z M 13 13 V 18 M 18 13 V 18 M 23 13 V 18 M 11 19 H 25" fill="none" stroke="#15803D" stroke-width="1.2" stroke-linecap="round"/>
+      <text x="30" y="18" class="mono" font-size="11" fill="#15803D">Banking / Camera / Unlock OK</text>
+    </g>
+  </g>
+
+  <!-- Technical Divider Line -->
+  <line x1="52" y1="334" x2="536" y2="334" stroke="#E2E8F0" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- Bottom Hardware Spec Line -->
+  <g transform="translate(52, 356)">
+    <text x="0" y="0" class="mono" font-size="10.5" fill="#94A3B8" letter-spacing="0.5">DEV_MODEL: PD2339 / PD2339M  •  SOC: D9300+  •  APP_PROCESS64 INJECT</text>
+  </g>
+
+  <!-- ================= RIGHT TERMINAL WINDOW ================= -->
+
+  <g transform="translate(570, 50)" filter="url(#card-shadow)">
+    <!-- Terminal Outer Frame -->
+    <rect width="578" height="318" rx="14" fill="url(#terminal-card-bg)" stroke="#CBD5E1" stroke-width="1.2"/>
+
+    <!-- Terminal Header Bar -->
+    <path d="M 0 14 C 0 6.27 6.27 0 14 0 L 564 0 C 571.73 0 578 6.27 578 14 L 578 38 L 0 38 Z" fill="#F8FAFC"/>
+    <line x1="0" y1="38" x2="578" y2="38" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- Window Action Buttons (macOS / Linux style) -->
+    <circle cx="22" cy="19" r="5" fill="#EF4444" fill-opacity="0.85"/>
+    <circle cx="38" cy="19" r="5" fill="#F59E0B" fill-opacity="0.85"/>
+    <circle cx="54" cy="19" r="5" fill="#10B981" fill-opacity="0.85"/>
+
+    <!-- Terminal Title -->
+    <text x="74" y="23" class="mono" font-size="11" fill="#64748B">ghostlock@neo9spro:~ (r830_autofire.sh)</text>
+
+    <!-- Header Status Pill -->
+    <rect x="472" y="9" width="92" height="20" rx="10" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
+    <circle cx="483" cy="19" r="3.5" fill="#10B981"/>
+    <text x="492" y="23" class="mono" font-size="9" fill="#047857" letter-spacing="0.5">READY_ROOT</text>
+
+    <!-- Terminal Execution Body -->
+    <g transform="translate(20, 62)" class="mono" font-size="11.5">
+      <!-- Line 1: Command Execution -->
+      <text y="0">
+        <tspan fill="#64748B">$</tspan>
+        <tspan fill="#0284C7"> ./scripts/r830_autofire.sh</tspan>
+        <tspan fill="#475569"> r830 3</tspan>
+      </text>
+
+      <!-- Line 2: Device Identification -->
+      <text y="22">
+        <tspan fill="#6366F1">[*]</tspan>
+        <tspan fill="#475569"> target:</tspan>
+        <tspan fill="#0F172A"> vivo iQOO Neo9S Pro [PD2339]</tspan>
+      </text>
+
+      <!-- Line 3: Round A Futex Lock PI Hole -->
+      <text y="44">
+        <tspan fill="#6366F1">[*]</tspan>
+        <tspan fill="#475569"> round_a:</tspan>
+        <tspan fill="#2563EB"> futex_lock_pi()</tspan>
+        <tspan fill="#64748B"> stack hole parked</tspan>
+        <tspan fill="#059669"> [OK]</tspan>
+      </text>
+
+      <!-- Line 4: KASLR Base Leak -->
+      <text y="66">
+        <tspan fill="#6366F1">[*]</tspan>
+        <tspan fill="#475569"> leak_kaslr:</tspan>
+        <tspan fill="#7C3AED"> psl2</tspan>
+        <tspan fill="#64748B"> TEXT=</tspan>
+        <tspan fill="#B45309">0xffffffc008080000</tspan>
+      </text>
+
+      <!-- Line 5: Dynamic Ko Bake -->
+      <text y="88">
+        <tspan fill="#6366F1">[*]</tspan>
+        <tspan fill="#475569"> bake_ko:</tspan>
+        <tspan fill="#0284C7"> ksu/make_device_ko.sh</tspan>
+        <tspan fill="#64748B"> (kallsyms.new)</tspan>
+      </text>
+
+      <!-- Line 6: Round B Hijack -->
+      <text y="110">
+        <tspan fill="#6366F1">[*]</tspan>
+        <tspan fill="#475569"> round_b:</tspan>
+        <tspan fill="#4F46E5"> fops hijack</tspan>
+        <tspan fill="#64748B"> &amp; commit_creds()</tspan>
+      </text>
+
+      <!-- Line 7: Success Exploit Status -->
+      <text y="132">
+        <tspan fill="#059669">[+]</tspan>
+        <tspan fill="#047857"> root_grant:</tspan>
+        <tspan fill="#0F172A"> uid=0 gid=0</tspan>
+        <tspan fill="#64748B"> selinux=permissive</tspan>
+      </text>
+
+      <!-- Line 8: KernelSU Active -->
+      <text y="154">
+        <tspan fill="#059669">[✓]</tspan>
+        <tspan fill="#047857"> KernelSU driver initialized &amp; loaded</tspan>
+      </text>
+
+      <!-- Line 9: System Status Note -->
+      <text y="176">
+        <tspan fill="#94A3B8">[#] /system &amp; /vendor intact • 100% rootless</tspan>
+      </text>
+
+      <!-- Line 10: Interactive Root Prompt -->
+      <text y="202">
+        <tspan fill="#047857">root@PD2339:/data/local/tmp#</tspan>
+        <tspan fill="#0284C7"> id</tspan>
+      </text>
+
+      <text y="222">
+        <tspan fill="#0F172A">uid=0(root) gid=0(root) groups=0(root)</tspan>
+        <tspan fill="#4F46E5" class="blink"> _</tspan>
+      </text>
+    </g>
+
+    <!-- Terminal Footer Status Bar -->
+    <path d="M 0 294 L 578 294 L 578 304 C 578 311.73 571.73 318 564 318 L 14 318 C 6.27 318 0 311.73 0 304 Z" fill="#F1F5F9"/>
+    <text x="16" y="309" class="mono" font-size="9.5" fill="#94A3B8">STATUS: 2 STAGES COMPLETED  •  EXIT_CODE: 0  •  LATENCY: 412ms</text>
+    <text x="562" y="309" class="mono" font-size="9.5" fill="#94A3B8" text-anchor="end">KSU_VERSION: 0.9.5-rootless</text>
+  </g>
+</svg>
