@@ -36,7 +36,9 @@ jobs:
           sudo apt-get install -y clang lld make python3 zip
 
       - name: Install Android NDK r30
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
 
       - name: Select Android NDK
         shell: bash
