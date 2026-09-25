@@ -20,8 +20,8 @@ A轮在futexPI等待路径（`FUTEX_LOCK_PI`）留下可复用的栈空洞，B�
 
 ## 构建
 
-依赖AndroidNDK，Makefile按`ANDROID_NDK_HOME`→`ANDROID_NDK_ROOT`→
-`~/android-ndk-cache/android-ndk-*`→`~/Android/Sdk/ndk/*`→`/opt/android-ndk`
+依赖AndroidNDK，Makefile按`ANDROID_NDK_HOME`、`ANDROID_NDK_ROOT`、
+`~/android-ndk-cache/android-ndk-*`、`~/Android/Sdk/ndk/*`、`/opt/android-ndk`
 顺序探测，clang资源目录用`lib/clang/*`通配。找不到时回退到宿主机`clang`
 加`--target=aarch64-linux-android35`交叉参数（需自备sysroot）。
 用`make info`查看实际选中的工具链。
@@ -84,6 +84,12 @@ export ANDROID_SERIAL=<你的设备serial>   # 多设备时必填，单设备可
 `pr_info`（`[*]`前缀的逐周期/逐次重试行）默认关闭，只保留
 `pr_warning`/`pr_success`/`pr_error`与判定marker。需要完整输出加
 `GL_LOG_INFO=1`。
+
+## Panic？
+目前取得root权限之后没有遇到任何因为root权限导致的应用程序崩溃、
+银行软件无法运行、手机无法解锁、相机无法使用等问题。
+因为这本身是一种rootless的方案，并没有写入/system分区或者是/vendor
+分区，本身操作安全。
 
 ## License
 
