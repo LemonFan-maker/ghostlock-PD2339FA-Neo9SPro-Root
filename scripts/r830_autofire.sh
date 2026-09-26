@@ -23,6 +23,7 @@ B_VERDICT_TIMEOUT=${B_VERDICT_TIMEOUT:-600}
 ALLOW_REBOOT=${ALLOW_REBOOT:-1}
 GATE_MAX_TRIES=2
 A_SLOT_LIST="1 2"
+A_TIMEOUT=${A_TIMEOUT:-45}
 
 DRV=${TAG}_driver.log
 : > "$DRV"
@@ -127,6 +128,7 @@ fireA(){
   local AL=${TAG}a${CYCLE}s${slot}_full.log
   sed -e "s/SLIDE_LOCK_SLOT=[0-9]*/SLIDE_LOCK_SLOT=$slot/" \
       -e "s/tee r[0-9a-z]*a_full\.log/tee $AL/" \
+      -e "s/^timeout 60 /timeout $A_TIMEOUT /" \
       scripts/r821a_command.txt > ${TAG}a${CYCLE}s${slot}_command.txt
   log "A fire slot=$slot (cmd md5 $(md5sum ${TAG}a${CYCLE}s${slot}_command.txt | cut -c1-8))"
   local t0=$(date +%s)
@@ -149,7 +151,7 @@ PY
      sleep 6; read_state
      if [ "${BID:-X}" != "${OLDBID:-Y}" ] || ! online; then
        A_VERDICT=PANIC; log "  log truncated at kill edge + boot_id changed/offline -> PANIC"
-     elif [ "$dur" -lt 40 ]; then
+     elif [ "$dur" -lt $((A_TIMEOUT - 5)) ]; then
        A_VERDICT=PANIC; log "  log truncated + exited in ${dur}s (far too early for a walk) -> PANIC"
      else
        log "  no verdict but device alive after ${dur}s -> treating as MISS"

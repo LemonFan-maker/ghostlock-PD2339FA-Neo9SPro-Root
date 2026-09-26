@@ -22,6 +22,7 @@ payloads/preload.so
 *_band_post.txt
 *_ramoops*.txt
 *_bootreasons.txt
+psl2*.txt
 ksu/kernelsu-*.ko
 !ksu/kernelsu-android14-6.1-local.ko
 ksu/kernelsu-device-ready.ko
