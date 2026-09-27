@@ -144,4 +144,4 @@ adb shell "cd /data/local/tmp && env SLIDE_WRITE_TARGET=fops \
 剩下留存的解决方案还在研制中……
 
 ## License
-[MIT License](LICENSE)
+[Apache-2.0 License](LICENSE)
