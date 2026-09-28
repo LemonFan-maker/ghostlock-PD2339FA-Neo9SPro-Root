@@ -7,7 +7,7 @@
   <a href="https://android.com/"><img src="https://img.shields.io/badge/Android-16%20(BP2A)-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android"></a>
   <a href="#目标设备"><img src="https://img.shields.io/badge/Target-vivo%20iQOO%20Neo9S%20Pro-orange?style=flat-square" alt="Target"></a>
   <a href="https://github.com/tiann/KernelSU"><img src="https://img.shields.io/badge/Root-KernelSU%20(Rootless)-6366F1?style=flat-square" alt="KernelSU"></a>
-  <a href="#license"><img src="https://img.shields.io/badge/License-MIT-emerald?style=flat-square" alt="License"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/License-Apache2.0-emerald?style=flat-square" alt="License"></a>
 </p>
 
 ---
