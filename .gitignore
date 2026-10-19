@@ -8,18 +8,21 @@ build/
 tools/hijtest
 tools/slot_restore
 tools/psl2
-tools/r829_bandscan
+tools/bandscan
 tools/psl2.rebuilt
 tools/arm_chain
 
 payloads/preload.so
 
-*_driver.log
+driver.log
+build.log
+manifest.txt
+logs/
 *_full.log
 *_command.txt
-!scripts/r776b_command.txt
-!scripts/r821a_command.txt
-*_band_post.txt
+!scripts/b_command.txt
+!scripts/a_command.txt
+band_post.txt
 *_ramoops*.txt
 *_bootreasons.txt
 psl2*.txt

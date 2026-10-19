@@ -12,11 +12,11 @@ PSL2_CC := $(firstword $(foreach n,$(NDK_CANDIDATES),\
 
 HOSTED_CFLAGS := -static -O2
 
-BINS := hijtest slot_restore psl2 r829_bandscan
+BINS := hijtest slot_restore psl2 bandscan
 
 .PHONY: all clean check-ndk $(BINS)
 
-all: hijtest slot_restore psl2
+all: hijtest slot_restore psl2 bandscan
 
 check-ndk:
 	@test -x "$(CC)" || { echo "ERROR: 未找到Android NDK（需要aarch64-linux-android$(API) wrapper）。" >&2; \
@@ -35,7 +35,7 @@ psl2: perf_slide.c
 	   echo "       设ANDROID_NDK_HOME指向r30或更新。" >&2; exit 1; }
 	$(PSL2_CC) -static -O2 -s $< -o $@
 
-r829_bandscan: r829_bandscan.c
+bandscan: bandscan.c
 	$(PSL2_CC) -static -O2 $< -o $@
 
 clean:

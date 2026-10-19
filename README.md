@@ -53,7 +53,7 @@
 ```sh
 make            # clean → tools → payload，全流程自动化构建
 make tools      # 仅构建 tools/ 工具：hijtest / slot_restore / psl2
-make -C tools r829_bandscan  # 按需构建内存带宽探测工具
+make -C tools bandscan  # 按需构建内存带宽探测工具
 make payload    # 仅构建 preload.so 与 su_ksu，打包至 payloads/preload.so
 make info       # 打印当前选中的 NDK 工具链与 GL_VERSION 编译版本
 make clean      # 清理 build/、payloads/ 与 tools/ 下全部构建产物
@@ -70,7 +70,7 @@ make clean      # 清理 build/、payloads/ 与 tools/ 下全部构建产物
 | `tools/psl2` | KASLR `TEXT` 地址探测工具 |
 | `tools/hijtest` | 函数指针劫持验证工具 |
 | `tools/slot_restore` | 栈槽位修复与测试工具 |
-| `tools/r829_bandscan` | 内存带宽与对齐探测工具 |
+| `tools/bandscan` | 内存带宽与对齐探测工具 |
 | `build/<TARGET>/bin/` | 编译中间件及 `preload.so`、`su_ksu` 源码原件 |
 
 版本号在构建时通过 `git describe` 自动编译进二进制内部（`BUILD_VERSION`）：
@@ -95,14 +95,14 @@ strings payloads/preload.so | grep -E '^[0-9a-f]{7,}(-dirty)?$'
 
 ### 方式一：全自动发射（推荐）
 
-使用一键式自动化编排脚本 [`scripts/r830_autofire.sh`](scripts/r830_autofire.sh)，支持任意当前工作目录调用：
+使用一键式自动化编排脚本 [`scripts/autofire.sh`](scripts/autofire.sh)，支持任意当前工作目录调用：
 
 ```sh
 # 多设备并存时指定目标 Serial，单设备时可省略
 export ANDROID_SERIAL=<你的设备Serial>
 
 # 启动全自动两轮利用发射
-./scripts/r830_autofire.sh r830 3
+./scripts/autofire.sh 3
 ```
 
 #### 可用环境变量配置

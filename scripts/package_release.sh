@@ -34,9 +34,9 @@ mkdir -p "$PACKAGE_DIR"
 # each boot, so the device-ready KO must be generated from these assets.
 for file in \
   LICENSE \
-  scripts/r830_autofire.sh \
-  scripts/r821a_command.txt \
-  scripts/r776b_command.txt \
+  scripts/autofire.sh \
+  scripts/a_command.txt \
+  scripts/b_command.txt \
   ksu/make_device_ko.sh \
   ksu/make_device_ko.py \
   ksu/kernelsu-android14-6.1-local.ko \
@@ -44,31 +44,25 @@ for file in \
   tools/hijtest \
   tools/slot_restore \
   tools/psl2 \
-  tools/r829_bandscan \
+  tools/bandscan \
   payloads/preload.so; do
   copy_file "$file"
 done
 
-# Preserve all tracked KO variants when present, but never accidentally ship a
-# stale device-ready module produced by an earlier local run.
-ko_count=0
-for source in "$REPO_ROOT"/ksu/*.ko; do
-  [ -f "$source" ] || continue
-  name=${source##*/}
-  [ "$name" = "kernelsu-device-ready.ko" ] && continue
-  copy_file "ksu/$name"
-  ko_count=$((ko_count + 1))
-done
-[ "$ko_count" -gt 0 ] || fail "no KO asset found under ksu/"
+# Only the canonical local module ships. The device-ready module is baked per
+# boot from this asset, so any other ksu/*.ko in the tree is a stale per-round
+# leftover and must never reach the archive.
+[ -f "$REPO_ROOT/ksu/kernelsu-android14-6.1-local.ko" ] \
+  || fail "missing KO asset: ksu/kernelsu-android14-6.1-local.ko"
 
 chmod 0755 \
-  "$PACKAGE_DIR/scripts/r830_autofire.sh" \
+  "$PACKAGE_DIR/scripts/autofire.sh" \
   "$PACKAGE_DIR/ksu/make_device_ko.sh" \
   "$PACKAGE_DIR/ksu/make_device_ko.py" \
   "$PACKAGE_DIR/tools/hijtest" \
   "$PACKAGE_DIR/tools/slot_restore" \
   "$PACKAGE_DIR/tools/psl2" \
-  "$PACKAGE_DIR/tools/r829_bandscan"
+  "$PACKAGE_DIR/tools/bandscan"
 
 printf '%s\n' "$VERSION" > "$PACKAGE_DIR/VERSION"
 

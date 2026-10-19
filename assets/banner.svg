@@ -209,7 +209,7 @@
     <circle cx="54" cy="19" r="5" fill="#10B981" fill-opacity="0.85"/>
 
     <!-- Terminal Title -->
-    <text x="74" y="23" class="mono" font-size="11" fill="#64748B">ghostlock@neo9spro:~ (r830_autofire.sh)</text>
+    <text x="74" y="23" class="mono" font-size="11" fill="#64748B">ghostlock@neo9spro:~ (autofire.sh)</text>
 
     <!-- Header Status Pill -->
     <rect x="472" y="9" width="92" height="20" rx="10" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
@@ -221,8 +221,8 @@
       <!-- Line 1: Command Execution -->
       <text y="0">
         <tspan fill="#64748B">$</tspan>
-        <tspan fill="#0284C7"> ./scripts/r830_autofire.sh</tspan>
-        <tspan fill="#475569"> r830 3</tspan>
+        <tspan fill="#0284C7"> ./scripts/autofire.sh</tspan>
+        <tspan fill="#475569"> 3</tspan>
       </text>
 
       <!-- Line 2: Device Identification -->

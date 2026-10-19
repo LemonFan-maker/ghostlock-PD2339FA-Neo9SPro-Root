@@ -1,4 +1,4 @@
-/* r829_bandscan.c - measure the physical-page landscape the B-round L-gate depends on.
+/* bandscan.c - measure the physical-page landscape the B-round L-gate depends on.
  *
  * The L-gate accepts only when the leaked order-3 page lands in a low-PA band
  * (observed: PA 520-643MB, i.e. dist 482-605MB from glk PA ~36.5MB).

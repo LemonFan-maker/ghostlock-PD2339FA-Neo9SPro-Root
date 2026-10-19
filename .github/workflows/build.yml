@@ -56,14 +56,14 @@ jobs:
         run: make PROJECT="$PROJECT"
 
       - name: Build optional band probe
-        run: make -C tools r829_bandscan
+        run: make -C tools bandscan
 
       - name: Verify build outputs
         shell: bash
         run: |
           set -euo pipefail
           test -s payloads/preload.so
-          for file in tools/hijtest tools/slot_restore tools/psl2 tools/r829_bandscan; do
+          for file in tools/hijtest tools/slot_restore tools/psl2 tools/bandscan; do
             test -x "$file"
           done
           bash -n scripts/*.sh ksu/*.sh
@@ -84,7 +84,7 @@ jobs:
           printf '%s\n' "$contents" | grep -Fx "$top/ksu/make_device_ko.py" >/dev/null
           printf '%s\n' "$contents" | grep -Fx "$top/ksu/kernelsu-android14-6.1-local.ko" >/dev/null
           printf '%s\n' "$contents" | grep -Fx "$top/tools/kallsyms.new" >/dev/null
-          printf '%s\n' "$contents" | grep -Fx "$top/scripts/r830_autofire.sh" >/dev/null
+          printf '%s\n' "$contents" | grep -Fx "$top/scripts/autofire.sh" >/dev/null
           if printf '%s\n' "$contents" | grep -E '(^|/)README\.md$|(^|/)requirements\.txt$|(^|/)run\.sh$'; then
             echo 'unexpected convenience or dependency file in runnable archive' >&2
             exit 1
