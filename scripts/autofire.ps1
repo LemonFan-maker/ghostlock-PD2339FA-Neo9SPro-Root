@@ -37,6 +37,7 @@ $script:AdbParts = @($script:AdbExe)
 if ($serial) { $script:AdbParts += @('-s', $serial) }
 
 $script:BVerdictTimeout = [int](Get-EnvOr 'B_VERDICT_TIMEOUT' '600')
+$script:BDrainGrace = [int](Get-EnvOr 'B_DRAIN_GRACE' '12')
 $script:AllowReboot = (Get-EnvOr 'ALLOW_REBOOT' '1') -eq '1'
 $script:ATimeout = [int](Get-EnvOr 'A_TIMEOUT' '45')
 $script:MaxReboots = [int](Get-EnvOr 'MAX_REBOOTS' '3')
@@ -560,7 +561,9 @@ function Invoke-Gate {
     $lm = $LOAD_MAX_LATE
     if ([Math]::Floor($upNum) -lt $LOAD_EARLY_UNTIL) { $lm = $LOAD_MAX_EARLY }
 
-    if ($upNum -le 0 -or $upNum -ge 100000) { Write-Log '  GATE-WAIT uptime insane'; return 1 }
+    # Ceiling only rejects parse garbage; it must stay far above UPTIME_REBOOT_AT so a
+    # long-idle device reaches GATE-REBOOT instead of being misread as transient.
+    if ($upNum -le 0 -or $upNum -ge 1e9) { Write-Log '  GATE-WAIT uptime insane'; return 1 }
     if ($l1Num -lt 0 -or $l1Num -ge 2000) { Write-Log '  GATE-WAIT loadavg insane'; return 1 }
 
     if ($script:Enf -ne 'Enforcing') {
@@ -616,7 +619,9 @@ function Invoke-FireA {
     if ([string]::IsNullOrEmpty($tpl)) { Stop-Fatal 'missing host input scripts/a_command.txt' }
 
     $d = [regex]::Replace($tpl, 'SLIDE_LOCK_SLOT=[0-9]*', "SLIDE_LOCK_SLOT=$Slot")
-    $d = [regex]::Replace($d, 'tee a_full\.log', "tee $al")
+    # The generated command must not tee; Start-BashCommandFile owns the only writer.
+    $d = [regex]::Replace($d, '[ \t]*\|[ \t]*tee a_full\.log[ \t]*$', '',
+        [System.Text.RegularExpressions.RegexOptions]::Multiline)
     $d = [regex]::Replace($d, '(?m)^timeout 60 ', "timeout $($script:ATimeout) ")
     Write-Utf8NoBom -Path (Join-Path $RepoRoot $cmdPath) -Text $d
 
@@ -780,7 +785,9 @@ function New-BCommandFile {
     $d = $d.Replace('SLIDE_TEXT_ADDR=0xffffffd8f0c00000', 'SLIDE_TEXT_ADDR=' + $script:Text1)
     $d = [regex]::Replace($d, 'SLIDE_LOCK_SLOT=\d+', "SLIDE_LOCK_SLOT=$Slot")
     $d = $d.Replace('SLIDE_V155_RESAMPLE=12', 'SLIDE_V155_RESAMPLE=16')
-    $d = $d.Replace('tee b_full.log', "tee b_t${Try}_full.log")
+    # The generated command must not tee; Start-BashCommandFile owns the only writer.
+    $d = [regex]::Replace($d, '[ \t]*\|[ \t]*tee b_full\.log[ \t]*$', '',
+        [System.Text.RegularExpressions.RegexOptions]::Multiline)
     $d = $d.Replace('timeout 300 ${ADB} shell', 'timeout 600 ' + ($script:AdbParts -join ' ') + ' shell')
 
     $outName = "b_t${Try}_command.txt"
@@ -794,7 +801,7 @@ function New-BCommandFile {
             $d.Contains("SLIDE_LOCK_SLOT=$Slot"))) {
         throw 'template substitution failed'
     }
-    if (-not $d.Contains("b_t${Try}_full.log")) { throw 'per-try log substitution failed' }
+    if ($d.Contains('| tee b_full.log')) { throw 'in-command tee was not stripped' }
     return $outName
 }
 
@@ -824,7 +831,7 @@ function Invoke-FireB {
     Write-Log "B fire slot=$Slot try=$Try (cmd md5 $(Get-FileMd5Short $cmdPath))"
 
     $blAbs = Join-Path $RepoRoot $script:BL
-    [void](Start-BashCommandFile -CommandFile $cmdPath -RedirectFile $script:BL)
+    $proc = Start-BashCommandFile -CommandFile $cmdPath -RedirectFile $script:BL
 
     $waited = 0
     while ($waited -lt $script:BVerdictTimeout) {
@@ -837,10 +844,17 @@ function Invoke-FireB {
             if ($hit) { break }
         }
         if (-not (Test-Online) -and $waited -ge 20) { break }
+        if ($proc.HasExited) {
+            # Local adb shell exited: give the redirect a moment, then classify the log.
+            Start-Sleep -Seconds 2
+            break
+        }
     }
 
+    $still = (-not $proc.HasExited -and $waited -ge $script:BVerdictTimeout)
     Write-Log "  B verdict poll after ${waited}s -> $(Get-LineCount $blAbs) log lines"
     $script:BVerdict = Get-BVerdict $blAbs
+    if ($still) { $script:BVerdict = 'STILL-RUNNING' }
     Write-Log "B verdict slot=$Slot => $($script:BVerdict)"
     return 0
 }
@@ -1084,7 +1098,7 @@ while ($script:Cycle -lt $MaxCycles) {
         if ($script:BVerdict -eq 'PASS') {
             $bDirty = 1
             if (-not (Test-Online)) {
-                Write-Log '  PASS + device gone => PANIC #78 arm-stage crash (rb_insert_color graft)'
+                Write-Log '  PASS + device gone => panic during arm/graft (capture ramoops; do not assume #78)'
                 $bPanic = 1
                 $script:RamoopsDone = 0
                 Invoke-PanicCheck $blAbs
@@ -1093,12 +1107,22 @@ while ($script:Cycle -lt $MaxCycles) {
             }
             break
         }
-        switch ($script:BVerdict) {
-            'REJECT' { Write-Log '  L-gate rejected all draws (walk never fired, slot unconsumed) -> same-slot resample' }
-            'MISS' { Write-Log '  walk MISS (slot unconsumed) -> same-slot resample' }
-            default { Write-Log "  unexpected B outcome ($($script:BVerdict)) -> same-slot resample" }
+        if ($script:BVerdict -eq 'REJECT') {
+            Write-Log '  L-gate rejected all draws (walk never fired) -> same-slot resample'
+            Start-Sleep -Seconds 3
+            continue
         }
-        Start-Sleep -Seconds 3
+        $bDirty = 1
+        if ($script:BVerdict -eq 'MISS') {
+            Write-Log "  probe MISS: probe walk already consumed slot $bSlot -> NO same-slot refire; fresh boot required"
+        } elseif ($script:BVerdict -eq 'ARM-ABANDON') {
+            Write-Log "  arm abandoned after paint -> slot $bSlot spent; NO same-slot refire"
+        } elseif ($script:BVerdict -eq 'STILL-RUNNING') {
+            Write-Log "  B still running at verdict timeout -> treat slot $bSlot as spent; no refire"
+        } else {
+            Write-Log "  B outcome '$($script:BVerdict)' is not a clean pre-walk reject -> slot $bSlot spent; no same-slot refire"
+        }
+        break
     }
 
     if ($script:Win -ne 1 -and ($bDirty -eq 1 -or $bDead -eq 1 -or $bPanic -eq 1)) {
@@ -1110,7 +1134,8 @@ while ($script:Cycle -lt $MaxCycles) {
             }
             continue
         }
-        Write-Log '  boot is spent (dirty slot / device death) -> fresh boot needed'
+        Write-Log "  boot is spent (dirty slot / device death) -> $($script:BDrainGrace)s drain grace for v143 hygiene, then fresh boot"
+        Start-Sleep -Seconds $script:BDrainGrace
         if (-not (Invoke-RebootOnce)) {
             Write-Log 'cannot reach a fresh boot -> STOP'
             break

