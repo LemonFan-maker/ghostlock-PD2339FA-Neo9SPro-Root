@@ -24,6 +24,7 @@ logs/
 !scripts/a_command.txt
 band_post.txt
 *_ramoops*.txt
+ramoops*.txt
 *_bootreasons.txt
 psl2*.txt
 ksu/kernelsu-*.ko
